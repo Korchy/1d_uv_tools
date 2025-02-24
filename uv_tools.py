@@ -3,7 +3,6 @@
 #
 # GitHub
 #    https://github.com/Korchy/1d_uv_tools
-import math
 
 import bmesh
 import bpy
@@ -11,7 +10,7 @@ from bmesh.types import BMVert
 from bpy.props import BoolProperty, FloatVectorProperty
 from bpy.types import Operator, Panel, Scene, WindowManager
 from bpy.utils import register_class, unregister_class
-from math import ceil, floor, modf, sqrt
+from math import ceil, floor
 from mathutils import Vector, Matrix
 
 bl_info = {
