@@ -25,7 +25,7 @@ With enabled "Pack to Cursor" option - pack along the cursor.
 
 Current version
 -
-1.1.0.
+1.2.5.
 
 Blender version
 -
@@ -33,6 +33,19 @@ Blender version
 
 Version history
 -
+1.2.5 
+- Texel Scale operator renamed to "Retexel"
+
+1.2.4 
+- Add shifting all uv-points for selected faces in "Texel Scale" operator
+
+1.2.1 - 1.2.3
+- Fixing bugs
+
+1.2.0
+- Implemented "Multy Sure UV" functional from 1D_Scripts v. 0.10.22
+- Added "Texel Scale" functional
+
 1.1.0
 - "Store Key - Fit to Tile" functional added
 

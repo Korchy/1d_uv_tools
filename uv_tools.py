@@ -3,21 +3,22 @@
 #
 # GitHub
 #    https://github.com/Korchy/1d_uv_tools
+from platform import mac_ver
 
 import bmesh
 import bpy
 from bmesh.types import BMVert
-from bpy.props import BoolProperty, FloatVectorProperty
+from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty, StringProperty
 from bpy.types import Operator, Panel, Scene, WindowManager
 from bpy.utils import register_class, unregister_class
-from math import ceil, floor
+from math import ceil, cos, floor, sin, pi
 from mathutils import Vector, Matrix
 
 bl_info = {
     "name": "1D UV Tools",
     "description": "Tools for working with UV Maps",
     "author": "Nikita Akimov, Paul Kotelevets",
-    "version": (1, 1, 0),
+    "version": (1, 2, 5),
     "blender": (2, 79, 0),
     "location": "View3D > Tool panel > 1D > UV Tools",
     "doc_url": "https://github.com/Korchy/1d_uv_tools",
@@ -224,6 +225,80 @@ class UVTools:
             # return mode back
             bpy.ops.object.mode_set(mode=mode)
 
+    @classmethod
+    def texel_scale(cls, context, scale_by_x=True, scale_by_y=True):
+        # Texel Scale
+        #   return scale of active polygon UV to value before executing Multy Sure Uv
+        #   set scale for other selected polygons UVs to the same value
+        #   shift uv-points by difference of coordinates of any one uv-point of active face before and after Multy Sure Uv
+        # switch to Object mode
+        mode = context.active_object.mode
+        if context.active_object.mode == 'EDIT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        # active UV layer
+        uv_layer = cls._active_uv_layer(obj=context.active_object)
+        # 1. get source scale lengths by X and Y of the UV by active face
+        active_face = context.object.data.polygons[context.object.data.polygons.active]
+        # get UV points for active polygon
+        active_face_uv_points = cls._uv_points(faces_list=[active_face,], uv_layer=uv_layer)
+        # find max/min by X and Y
+        min_x_point = min(active_face_uv_points, key=lambda _point: _point.uv.x)
+        max_x_point = max(active_face_uv_points, key=lambda _point: _point.uv.x)
+        min_y_point = min(active_face_uv_points, key=lambda _point: _point.uv.y)
+        max_y_point = max(active_face_uv_points, key=lambda _point: _point.uv.y)
+        # get src x and y lengths
+        src_x = max_x_point.uv.x - min_x_point.uv.x
+        src_y = max_y_point.uv.y - min_y_point.uv.y
+        # get src coordinates of one point
+        src_co = Vector((active_face_uv_points[0].uv.x, active_face_uv_points[0].uv.y))
+        # 2. execute Multi Sure UV
+        # change mode back to correctly work of Multy Sure UV, and after its execution switch back to edit mode
+        bpy.ops.object.mode_set(mode=mode)
+        bpy.ops.uvtools.multy_sureuv()
+        if context.active_object.mode == 'EDIT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        # 3. get current scale lengths by X and Y of the UV by active face
+        # uv_layer, active_face, active_face_uv_points - renew, because all of them were lost after object mode changing
+        uv_layer = cls._active_uv_layer(obj=context.active_object)
+        active_face = context.object.data.polygons[context.object.data.polygons.active]
+        active_face_uv_points = cls._uv_points(faces_list=[active_face, ], uv_layer=uv_layer)
+        # find max/min by X and Y
+        min_x_point = min(active_face_uv_points, key=lambda _point: _point.uv.x)
+        max_x_point = max(active_face_uv_points, key=lambda _point: _point.uv.x)
+        min_y_point = min(active_face_uv_points, key=lambda _point: _point.uv.y)
+        max_y_point = max(active_face_uv_points, key=lambda _point: _point.uv.y)
+        # get current x and y lengths
+        current_x = max_x_point.uv.x - min_x_point.uv.x
+        current_y = max_y_point.uv.y - min_y_point.uv.y
+        # 4. get scale factor by X and Y and move factor
+        scale_factor_x = src_x / current_x
+        scale_factor_y = src_y / current_y
+        # 5. multiply each UV point coordinates by scale factor
+        # process uv points only from selected faces
+        selected_faces_uv_points = cls._uv_points(
+            faces_list=[_face for _face in context.object.data.polygons if _face.select],
+            uv_layer=uv_layer
+        )
+        for uv_point in selected_faces_uv_points:
+            # scale
+            if scale_by_x:
+                uv_point.uv.x = scale_factor_x * uv_point.uv.x
+            if scale_by_y:
+                uv_point.uv.y = scale_factor_y * uv_point.uv.y
+        # 6. shift each UV point coordinates by move factor
+        # get current coordinates of one point
+        current_co = Vector((active_face_uv_points[0].uv.x, active_face_uv_points[0].uv.y))
+        # get move factor
+        move_factor = current_co - src_co
+        # shift by move factor
+        # process uv points only from selected faces
+        for uv_point in selected_faces_uv_points:
+            # move
+            uv_point.uv -= move_factor
+        c_co = active_face_uv_points[0].uv
+        # return mode back
+        bpy.ops.object.mode_set(mode=mode)
+
 
     # EXPERIMENTAL
 
@@ -366,10 +441,245 @@ class UVTools:
         # return mode back
         bpy.ops.object.mode_set(mode=mode)
 
+    # END EXPERIMENTAL
+
     @staticmethod
-    def _active_uv_layer(bm):
-        # get active uv-layer (UV Map) from bmesh object
-        return bm.loops.layers.uv.active
+    def show_texture():
+        # Multy Sure UV from 1D_Scripts
+        obj = bpy.context.active_object
+        mesh = obj.data
+        is_editmode = (obj.mode == 'EDIT')
+        # if in EDIT Mode switch to OBJECT
+        if is_editmode:
+            bpy.ops.object.mode_set(mode='OBJECT', toggle=False)
+
+        # if no UVtex - create it
+        if not mesh.uv_textures:
+            uvtex = bpy.ops.mesh.uv_texture_add()
+        uvtex = mesh.uv_textures.active
+        uvtex.active_render = True
+
+        img = None
+        aspect = 1.0
+        mat = obj.active_material
+
+        try:
+            if mat:
+                img = mat.active_texture
+                for f in mesh.polygons:
+                    if not is_editmode or f.select:
+                        uvtex.data[f.index].image = img.image
+            else:
+                img = None
+        except:
+            pass
+
+        # Back to EDIT Mode
+        if is_editmode:
+            bpy.ops.object.mode_set(mode='EDIT', toggle=False)
+
+    @staticmethod
+    def box_map(all_scale_def, x_offset_def, y_offset_def, z_offset_def, x_rot_def, y_rot_def, z_rot_def, tex_aspect):
+        # Multy Sure UV from 1D_Scripts
+        obj = bpy.context.active_object
+        mesh = obj.data
+
+        is_editmode = (obj.mode == 'EDIT')
+
+        # if in EDIT Mode switch to OBJECT
+        if is_editmode:
+            bpy.ops.object.mode_set(mode='OBJECT', toggle=False)
+
+        # if no UVtex - create it
+        if not mesh.uv_textures:
+            uvtex = bpy.ops.mesh.uv_texture_add()
+        uvtex = mesh.uv_textures.active
+        # uvtex.active_render = True
+
+        img = None
+        aspect = 1.0
+        mat = obj.active_material
+        try:
+            if mat:
+                img = mat.active_texture
+                aspect = img.image.size[0] / img.image.size[1]
+        except:
+            pass
+        aspect = aspect * tex_aspect
+
+        #
+        # Main action
+        #
+        if all_scale_def:
+            sc = 1.0 / all_scale_def
+        else:
+            sc = 1.0
+
+        sx = 1 * sc
+        sy = 1 * sc
+        sz = 1 * sc
+        ofx = x_offset_def
+        ofy = y_offset_def
+        ofz = z_offset_def
+        rx = x_rot_def / 180 * pi
+        ry = y_rot_def / 180 * pi
+        rz = z_rot_def / 180 * pi
+
+        crx = cos(rx)
+        srx = sin(rx)
+        cry = cos(ry)
+        sry = sin(ry)
+        crz = cos(rz)
+        srz = sin(rz)
+        ofycrx = ofy * crx
+        ofzsrx = ofz * srx
+
+        ofysrx = ofy * srx
+        ofzcrx = ofz * crx
+
+        ofxcry = ofx * cry
+        ofzsry = ofz * sry
+
+        ofxsry = ofx * sry
+        ofzcry = ofz * cry
+
+        ofxcrz = ofx * crz
+        ofysrz = ofy * srz
+
+        ofxsrz = ofx * srz
+        ofycrz = ofy * crz
+
+        # uvs = mesh.uv_loop_layers[mesh.uv_loop_layers.active_index].data
+        uvs = mesh.uv_layers.active.data
+        for i, pol in enumerate(mesh.polygons):
+            if not is_editmode or mesh.polygons[i].select:
+                for j, loop in enumerate(mesh.polygons[i].loop_indices):
+                    v_idx = mesh.loops[loop].vertex_index
+                    # print('before[%s]:' % v_idx)
+                    # print(uvs[loop].uv)
+                    n = mesh.polygons[i].normal
+                    co = mesh.vertices[v_idx].co
+                    x = co.x * sx
+                    y = co.y * sy
+                    z = co.z * sz
+                    if abs(n[0]) > abs(n[1]) and abs(n[0]) > abs(n[2]):
+                        # X
+                        if n[0] >= 0:
+                            uvs[loop].uv[0] = y * crx + z * srx - ofycrx - ofzsrx
+                            uvs[loop].uv[1] = -y * aspect * srx + z * aspect * crx + ofysrx - ofzcrx
+                        else:
+                            uvs[loop].uv[0] = -y * crx + z * srx + ofycrx - ofzsrx
+                            uvs[loop].uv[1] = y * aspect * srx + z * aspect * crx - ofysrx - ofzcrx
+                    elif abs(n[1]) > abs(n[0]) and abs(n[1]) > abs(n[2]):
+                        # Y
+                        if n[1] >= 0:
+                            uvs[loop].uv[0] = -x * cry + z * sry + ofxcry - ofzsry
+                            uvs[loop].uv[1] = x * aspect * sry + z * aspect * cry - ofxsry - ofzcry
+                        else:
+                            uvs[loop].uv[0] = x * cry + z * sry - ofxcry - ofzsry
+                            uvs[loop].uv[1] = -x * aspect * sry + z * aspect * cry + ofxsry - ofzcry
+                    else:
+                        # Z
+                        if n[2] >= 0:
+                            uvs[loop].uv[0] = x * crz + y * srz + - ofxcrz - ofysrz
+                            uvs[loop].uv[1] = -x * aspect * srz + y * aspect * crz + ofxsrz - ofycrz
+                        else:
+                            uvs[loop].uv[0] = -y * srz - x * crz + ofxcrz - ofysrz
+                            uvs[loop].uv[1] = y * aspect * crz - x * aspect * srz - ofxsrz - ofycrz
+
+        # Back to EDIT Mode
+        if is_editmode:
+            bpy.ops.object.mode_set(mode='EDIT', toggle=False)
+
+    @staticmethod
+    def best_planar_map(all_scale_def, xoffset_def, yoffset_def, zrot_def, tex_aspect):
+        # Multy Sure UV from 1D_Scripts
+        # Best Planar Mapping
+        # global all_scale_def, xoffset_def, yoffset_def, zrot_def, tex_aspect
+
+        obj = bpy.context.active_object
+        mesh = obj.data
+
+        is_editmode = (obj.mode == 'EDIT')
+
+        # if in EDIT Mode switch to OBJECT
+        if is_editmode:
+            bpy.ops.object.mode_set(mode='OBJECT', toggle=False)
+
+        # if no UVtex - create it
+        if not mesh.uv_textures:
+            uvtex = bpy.ops.mesh.uv_texture_add()
+        uvtex = mesh.uv_textures.active
+        # uvtex.active_render = True
+
+        img = None
+        aspect = 1.0
+        mat = obj.active_material
+        try:
+            if mat:
+                img = mat.active_texture
+                aspect = img.image.size[0] / img.image.size[1]
+        except:
+            pass
+        aspect = aspect * tex_aspect
+
+        #
+        # Main action
+        #
+        if all_scale_def:
+            sc = 1.0 / all_scale_def
+        else:
+            sc = 1.0
+
+            # Calculate Average Normal
+        v = Vector((0, 0, 0))
+        cnt = 0
+        for f in mesh.polygons:
+            if f.select:
+                cnt += 1
+                v = v + f.normal
+
+        zv = Vector((0, 0, 1))
+        q = v.rotation_difference(zv)
+
+        sx = 1 * sc
+        sy = 1 * sc
+        sz = 1 * sc
+        ofx = xoffset_def
+        ofy = yoffset_def
+        rz = zrot_def / 180 * pi
+
+        cosrz = cos(rz)
+        sinrz = sin(rz)
+
+        # uvs = mesh.uv_loop_layers[mesh.uv_loop_layers.active_index].data
+        uvs = mesh.uv_layers.active.data
+        for i, pol in enumerate(mesh.polygons):
+            if not is_editmode or mesh.polygons[i].select:
+                for j, loop in enumerate(mesh.polygons[i].loop_indices):
+                    v_idx = mesh.loops[loop].vertex_index
+
+                    n = pol.normal
+                    co = q * mesh.vertices[v_idx].co
+                    x = co.x * sx
+                    y = co.y * sy
+                    z = co.z * sz
+                    uvs[loop].uv[0] = x * cosrz - y * sinrz + xoffset_def
+                    uvs[loop].uv[1] = aspect * (- x * sinrz - y * cosrz) + yoffset_def
+
+        # Back to EDIT Mode
+        if is_editmode:
+            bpy.ops.object.mode_set(mode='EDIT', toggle=False)
+
+    @staticmethod
+    def _active_uv_layer(obj):
+        # get active uv-layer (UV Map)
+        if isinstance(obj, bmesh.types.BMesh):
+            # from bmesh object
+            return obj.loops.layers.uv.active
+        else:
+            # from object
+            return obj.data.uv_layers.active
 
     @staticmethod
     def _centroid(vertexes):
@@ -389,49 +699,141 @@ class UVTools:
         return Matrix.Rotation(angle, 2, 'Z')
 
     @staticmethod
-    def ui(layout, context):
-        # ui panel
-        # UV Pack
-        box = layout.box()
-        op = box.operator(
-            operator='uvtools.uvpack',
-            icon='UV_FACESEL'
-        )
-        box.prop(
-            data=context.scene,
-            property='uv_tools_1d_prop_pack_to_cursor'
-        )
-        op.pack_to_cursor = context.scene.uv_tools_1d_prop_pack_to_cursor
-        # Fit to Tile
-        box = layout.box()
-        box.operator(
-            operator='uvtools.store_diagonal',
-            icon='OUTLINER_DATA_LATTICE'
-        )
-        op = box.operator(
-            operator='uvtools.fit_to_tile',
-            icon='FULLSCREEN_ENTER'
-        )
-        op.add_scale = context.window_manager.uv_tools_1d_prop_fit_to_tile_add_scale
-        box.prop(
-            data=context.window_manager,
-            property='uv_tools_1d_prop_fit_to_tile_add_scale'
-        )
+    def _uv_points(faces_list, uv_layer):
+        # get list of UV points for mesh faces from faces_list
+        # [uv_point, uv_point, ...]
+        return [uv_layer.data[loop_index] for _face in faces_list for loop_index in _face.loop_indices]
 
-        # ToDo: EXPERIMENTAL
-        layout.separator()
-        box = layout.box()
-        box.label(text='Experimental')
-        # UV Select Cut Tile
-        box.operator(
-            operator='uvtools.select_uvcut_tile',
-            icon='MOD_UVPROJECT'
-        )
-        # UV Cut Tile
-        box.operator(
-            operator='uvtools.uvcut_tile',
-            icon='UV_EDGESEL'
-        )
+    @staticmethod
+    def ui(layout, context, area):
+        # ui panels
+        if area == 'VIEWPORT':
+            # Texel Scale
+            box = layout.box().column()
+            box.label(text='Texel Scale')
+            op = box.operator(
+                operator='uvtools.texel_scale',
+                icon='FORCE_TEXTURE'
+            )
+            op.scale_by_x = context.window_manager.uv_tools_1d_prop_texel_scale_by_x
+            op.scale_by_y = context.window_manager.uv_tools_1d_prop_texel_scale_by_y
+            row = box.row()
+            row.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_texel_scale_by_x'
+            )
+            row.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_texel_scale_by_y'
+            )
+            # Multy Sure UV
+            box = layout.box().column()
+            box.label(text='Sure UV Map')
+            row = box.row()
+            if context.window_manager.uv_tools_1d_prop_disp_omsureuv:
+                row.prop(
+                    data=context.window_manager,
+                    property='uv_tools_1d_prop_disp_omsureuv',
+                    text='',
+                    icon='DOWNARROW_HLT'
+                )
+            else:
+                row.prop(
+                    data=context.window_manager,
+                    property='uv_tools_1d_prop_disp_omsureuv',
+                    text='',
+                    icon='RIGHTARROW'
+                )
+            row.operator(
+                operator='uvtools.multy_sureuv',
+                text='Obj Multy SureUV'
+            )
+            if context.window_manager.uv_tools_1d_prop_disp_omsureuv:
+                box2 = box.box().column()
+                layout = box2.column(align=True)
+                layout.label('XYZ rotation')
+                col2 = layout.column()
+                col2.prop(
+                    data=context.window_manager,
+                    property='uv_tools_1d_prop_omsureuv_rot',
+                    text=''
+                )
+                layout.label('XYZ offset')
+                col2 = layout.column()
+                col2.prop(
+                    data=context.window_manager,
+                    property='uv_tools_1d_prop_omsureuv_offset',
+                    text=''
+                )
+            box.label('Press this button first:')
+            op = box.operator(
+                operator='uvtools.sureuvw_operator',
+                text='Show active texture on object')
+            op.action = 'showtex'
+            op.size=context.window_manager.uv_tools_1d_prop_omsureuv_all_scale_def
+            op.rot=context.window_manager.uv_tools_1d_prop_omsureuv_rot
+            op.offset=context.window_manager.uv_tools_1d_prop_omsureuv_offset
+            box.label('UVW Mapping:')
+            op = box.operator(
+                operator='uvtools.sureuvw_operator',
+                text='UVW Box Map'
+            )
+            op.action = 'box'
+            op.size=context.window_manager.uv_tools_1d_prop_omsureuv_all_scale_def
+            op.rot=context.window_manager.uv_tools_1d_prop_omsureuv_rot
+            op.offset=context.window_manager.uv_tools_1d_prop_omsureuv_offset
+            op = box.operator(
+                operator='uvtools.sureuvw_operator',
+                text='Best Planar Map'
+            )
+            op.action = 'bestplanar'
+            op.size=context.window_manager.uv_tools_1d_prop_omsureuv_all_scale_def
+            op.rot=context.window_manager.uv_tools_1d_prop_omsureuv_rot
+            op.offset=context.window_manager.uv_tools_1d_prop_omsureuv_offset
+            box.label('1. Make Material With Raster Texture!')
+            box.label('2. Set Texture Mapping Coords: UV!')
+            box.label('3. Use Addon buttons')
+        elif area == 'UV':
+            # UV Pack
+            box = layout.box()
+            op = box.operator(
+                operator='uvtools.uvpack',
+                icon='UV_FACESEL'
+            )
+            box.prop(
+                data=context.scene,
+                property='uv_tools_1d_prop_pack_to_cursor'
+            )
+            op.pack_to_cursor = context.scene.uv_tools_1d_prop_pack_to_cursor
+            # Fit to Tile
+            box = layout.box()
+            box.operator(
+                operator='uvtools.store_diagonal',
+                icon='OUTLINER_DATA_LATTICE'
+            )
+            op = box.operator(
+                operator='uvtools.fit_to_tile',
+                icon='FULLSCREEN_ENTER'
+            )
+            op.add_scale = context.window_manager.uv_tools_1d_prop_fit_to_tile_add_scale
+            box.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_fit_to_tile_add_scale'
+            )
+            # ToDo: EXPERIMENTAL
+            layout.separator()
+            box = layout.box()
+            box.label(text='Experimental')
+            # UV Select Cut Tile
+            box.operator(
+                operator='uvtools.select_uvcut_tile',
+                icon='MOD_UVPROJECT'
+            )
+            # UV Cut Tile
+            box.operator(
+                operator='uvtools.uvcut_tile',
+                icon='UV_EDGESEL'
+            )
 
 
 # OPERATORS
@@ -483,6 +885,274 @@ class UVTools_OT_fit_to_tile(Operator):
         )
         return {'FINISHED'}
 
+
+class UVTools_OT_texel_scale(Operator):
+    bl_idname = 'uvtools.texel_scale'
+    bl_label = 'Retexel'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    scale_by_x = BoolProperty(
+        name='Scale by X',
+        default=True
+    )
+    scale_by_y = BoolProperty(
+        name='Scale by Y',
+        default=True
+    )
+
+    def execute(self, context):
+        UVTools.texel_scale(
+            context=context,
+            scale_by_x=self.scale_by_x,
+            scale_by_y=self.scale_by_y
+        )
+        return {'FINISHED'}
+
+
+class UVTools_PaObjMultySureUV(Operator):
+
+    """
+        Multy SureUV from 1D_Scripts
+    """
+
+    bl_idname = 'uvtools.multy_sureuv'
+    bl_label = 'Obj MMuulty SureUV MM mm ьь ЬЬ'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None and \
+               context.active_object.type == 'MESH'
+
+    def execute(self, context):
+        for ob in bpy.context.selected_objects:
+            if ob.type == 'MESH':
+                bpy.context.scene.objects.active = ob
+                bpy.ops.uvtools.sureuvw_operator(
+                    action='box',
+                    size=context.window_manager.uv_tools_1d_prop_omsureuv_all_scale_def,
+                    rot=context.window_manager.uv_tools_1d_prop_omsureuv_rot,
+                    offset=context.window_manager.uv_tools_1d_prop_omsureuv_offset,
+                    zrot=0,
+                    xoffset=0,
+                    yoffset=0,
+                    texaspect=1.0
+                )
+
+        return {'FINISHED'}
+
+class UVTools_SureUVWOperator(Operator):
+
+    """
+        Multy SureUV from 1D_Scripts
+    """
+
+    bl_idname = 'uvtools.sureuvw_operator'
+    bl_label = 'Sure UVW Map'
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = 'data'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    action = StringProperty(
+        default='box'
+    )
+    size = FloatProperty(
+        name='Size',
+        default=1.0,
+        precision=4
+    )
+    rot = FloatVectorProperty(
+        name='XYZ Rotation'
+    )
+    offset = FloatVectorProperty(
+        name='XYZ offset',
+        precision=4
+    )
+    zrot = FloatProperty(
+        name='Z rotation',
+        default=0.0
+    )
+    xoffset = FloatProperty(
+        name='X offset',
+        default=0.0,
+        precision=4
+    )
+    yoffset = FloatProperty(
+        name='Y offset',
+        default=0.0,
+        precision=4
+    )
+    texaspect = FloatProperty(
+        name='Texture aspect',
+        default=1.0,
+        precision=4
+    )
+    flag90 = BoolProperty()
+    flag90ccw = BoolProperty()
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj and obj.type == 'MESH'
+
+    def execute(self, context):
+        # print('** execute **')
+        # print(self.action)
+
+        all_scale_def = self.size
+        tex_aspect = self.texaspect
+
+        x_offset_def = self.offset[0]
+        y_offset_def = self.offset[1]
+        z_offset_def = self.offset[2]
+        x_rot_def = self.rot[0]
+        y_rot_def = self.rot[1]
+        z_rot_def = self.rot[2]
+
+        xoffset_def = self.xoffset
+        yoffset_def = self.yoffset
+        zrot_def = self.zrot
+
+        if self.flag90:
+            self.zrot += 90
+            zrot_def += 90
+            self.flag90 = False
+
+        if self.flag90ccw:
+            self.zrot += -90
+            zrot_def += -90
+            self.flag90ccw = False
+
+        if self.action == 'bestplanar':
+            UVTools.best_planar_map(
+                all_scale_def=self.size,
+                xoffset_def=self.offset[0],
+                yoffset_def=self.offset[1],
+                zrot_def=self.rot[2],
+                tex_aspect=self.texaspect
+            )
+        elif self.action == 'box':
+            UVTools.box_map(
+                all_scale_def=self.size,
+                x_offset_def=self.offset[0],
+                y_offset_def=self.offset[1],
+                z_offset_def=self.offset[2],
+                x_rot_def=self.rot[0],
+                y_rot_def=self.rot[1],
+                z_rot_def=self.rot[2],
+                tex_aspect=self.texaspect
+            )
+        elif self.action == 'showtex':
+            UVTools.show_texture()
+        elif self.action == 'doneplanar':
+            UVTools.best_planar_map(
+                all_scale_def=self.size,
+                xoffset_def=self.offset[0],
+                yoffset_def=self.offset[1],
+                zrot_def=self.rot[2],
+                tex_aspect=self.texaspect
+            )
+        elif self.action == 'donebox':
+            UVTools.box_map(
+                all_scale_def=self.size,
+                x_offset_def=self.offset[0],
+                y_offset_def=self.offset[1],
+                z_offset_def=self.offset[2],
+                x_rot_def=self.rot[0],
+                y_rot_def=self.rot[1],
+                z_rot_def=self.rot[2],
+                tex_aspect=self.texaspect
+            )
+        # print('finish execute')
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        # print('** invoke **')
+        # print(self.action)
+        if self.action == 'bestplanar':
+            UVTools.best_planar_map(
+                all_scale_def=self.size,
+                xoffset_def=self.offset[0],
+                yoffset_def=self.offset[1],
+                zrot_def=self.rot[2],
+                tex_aspect=self.texaspect
+            )
+        elif self.action == 'box':
+            UVTools.box_map(
+                all_scale_def=self.size,
+                x_offset_def=self.offset[0],
+                y_offset_def=self.offset[1],
+                z_offset_def=self.offset[2],
+                x_rot_def=self.rot[0],
+                y_rot_def=self.rot[1],
+                z_rot_def=self.rot[2],
+                tex_aspect=self.texaspect
+            )
+        elif self.action == 'showtex':
+            UVTools.show_texture()
+        elif self.action == 'doneplanar':
+            UVTools.best_planar_map(
+                all_scale_def=self.size,
+                xoffset_def=self.offset[0],
+                yoffset_def=self.offset[1],
+                zrot_def=self.rot[2],
+                tex_aspect=self.texaspect
+            )
+        elif self.action == 'donebox':
+            UVTools.box_map(
+                all_scale_def=self.size,
+                x_offset_def=self.offset[0],
+                y_offset_def=self.offset[1],
+                z_offset_def=self.offset[2],
+                x_rot_def=self.rot[0],
+                y_rot_def=self.rot[1],
+                z_rot_def=self.rot[2],
+                tex_aspect=self.texaspect
+            )
+        # print('finish invoke')
+        return {'FINISHED'}
+
+    def draw(self, context):
+        if self.action == 'bestplanar' or self.action == 'rotatecw' or self.action == 'rotateccw':
+            self.action = 'bestplanar'
+            layout = self.layout
+            layout.label("Size - " + self.action)
+            layout.prop(self, 'size', text="")
+            layout.label("Z rotation")
+            col = layout.column()
+            col.prop(self, 'zrot', text="")
+            row = layout.row()
+            row.prop(self, 'flag90ccw', text="-90 (CCW)")
+            row.prop(self, 'flag90', text="+90 (CW)")
+            layout.label("XY offset")
+            col = layout.column()
+            col.prop(self, 'xoffset', text="")
+            col.prop(self, 'yoffset', text="")
+
+            layout.label("Texture aspect")
+            layout.prop(self, 'texaspect', text="")
+
+            # layout.prop(self,'preview_flag', text="Interactive Preview")
+            # layout.operator("uvtools.sureuvw_operator",text="Done").action='doneplanar'
+
+        elif self.action == 'box':
+            layout = self.layout
+            layout.label("Size")
+            layout.prop(self, 'size', text="")
+            layout.label("XYZ rotation")
+            col = layout.column()
+            col.prop(self, 'rot', text="")
+            layout.label("XYZ offset")
+            col = layout.column()
+            col.prop(self, 'offset', text="")
+            layout.label("Texture squash (optional)")
+            layout.label("Always must be 1.0 !!!")
+            layout.prop(self, 'texaspect', text="")
+
+            # layout.prop(self,'preview_flag', text="Interactive Preview")
+            # layout.operator("uvtools.sureuvw_operator",text="Done").action='donebox'
+
 # Experimental
 
 class UVTools_OT_uvcut_tile(Operator):
@@ -519,7 +1189,21 @@ class UVTools_PT_panel(Panel):
     def draw(self, context):
         UVTools.ui(
             layout=self.layout,
-            context=context
+            context=context,
+            area='UV'
+        )
+
+class UVTools_PT_panel_Viewport(Panel):
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'TOOLS'
+    bl_label = 'UV Tools'
+    bl_category = '1D'
+
+    def draw(self, context):
+        UVTools.ui(
+            layout=self.layout,
+            context=context,
+            area='VIEWPORT'
         )
 
 
@@ -549,24 +1233,67 @@ def register(ui=True):
         name='Apply Scale',
         default=False
     )
+    WindowManager.uv_tools_1d_prop_texel_scale_by_x = BoolProperty(
+        name='Scale by X',
+        default=True
+    )
+    WindowManager.uv_tools_1d_prop_texel_scale_by_y = BoolProperty(
+        name='Scale by Y',
+        default=True
+    )
+    WindowManager.uv_tools_1d_prop_omsureuv_all_scale_def = FloatProperty(
+        # Multy SureUV from 1D_Scripts
+        name='omsureuv_all_scale_def',
+        default=3.0,
+        precision=4
+    )
+    WindowManager.uv_tools_1d_prop_omsureuv_rot = FloatVectorProperty(
+        # Multy SureUV from 1D_Scripts
+        name='omsureuv_rot',
+        precision=2
+    )
+    WindowManager.uv_tools_1d_prop_omsureuv_offset = FloatVectorProperty(
+        # Multy SureUV from 1D_Scripts
+        name='omsureuv_offset',
+        precision=4
+    )
+    WindowManager.uv_tools_1d_prop_disp_omsureuv = BoolProperty(
+        # Multy SureUV from 1D_Scripts
+        name='disp_omsureuv',
+        default=False
+    )
     register_class(UVTools_OT_uvpack)
     register_class(UVTools_OT_fit_to_tile)
+    register_class(UVTools_OT_texel_scale)
     register_class(UVTools_OT_store_diagonal)
     register_class(UVTools_OT_select_uvcut_tile)
     register_class(UVTools_OT_uvcut_tile)
+    register_class(UVTools_PaObjMultySureUV)
+    register_class(UVTools_SureUVWOperator)
     if ui:
         register_class(UVTools_PT_panel)
+        register_class(UVTools_PT_panel_Viewport)
 
 
 def unregister(ui=True):
     if ui:
+        unregister_class(UVTools_PT_panel_Viewport)
         unregister_class(UVTools_PT_panel)
     # butch clean
+    unregister_class(UVTools_SureUVWOperator)
+    unregister_class(UVTools_PaObjMultySureUV)
     unregister_class(UVTools_OT_uvcut_tile)
     unregister_class(UVTools_OT_select_uvcut_tile)
     unregister_class(UVTools_OT_store_diagonal)
+    unregister_class(UVTools_OT_texel_scale)
     unregister_class(UVTools_OT_fit_to_tile)
     unregister_class(UVTools_OT_uvpack)
+    del WindowManager.uv_tools_1d_prop_disp_omsureuv
+    del WindowManager.uv_tools_1d_prop_omsureuv_all_scale_def
+    del WindowManager.uv_tools_1d_prop_omsureuv_rot
+    del WindowManager.uv_tools_1d_prop_omsureuv_offset
+    del WindowManager.uv_tools_1d_prop_texel_scale_by_y
+    del WindowManager.uv_tools_1d_prop_texel_scale_by_x
     del WindowManager.uv_tools_1d_prop_fit_to_tile_add_scale
     del WindowManager.uv_tools_1d_prop_fit_to_tile_v2
     del WindowManager.uv_tools_1d_prop_fit_to_tile_v1
