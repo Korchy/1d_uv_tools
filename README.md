@@ -25,7 +25,7 @@ With enabled "Pack to Cursor" option - pack along the cursor.
 
 Current version
 -
-1.2.5.
+1.3.8.
 
 Blender version
 -
@@ -33,10 +33,29 @@ Blender version
 
 Version history
 -
-1.2.5 
+1.3.8
+- Modifying retexel "active face" mode
+
+1.3.6 - 1.3.7
+- Modifying retexel "edge" mode
+
+1.3.5
+- Changed rotation threshold functionality - now filter selected faces by difference of vertical and normal of active face
+
+1.3.4
+- Implemented "barycentric_transform" except other methods to return source positon of active uv-face after executing Multy Sure Uv
+- Added abiligy to call Multy Sure Uv as function without required switching to EDIT mode
+
+1.3.1 - 1.3.3
+- Fixing bugs
+
+1.3.0
+- Reconfigure "Retexel" functional - split to three execution variants by selection mode in 3D Viewport
+
+1.2.5
 - Texel Scale operator renamed to "Retexel"
 
-1.2.4 
+1.2.4
 - Add shifting all uv-points for selected faces in "Texel Scale" operator
 
 1.2.1 - 1.2.3

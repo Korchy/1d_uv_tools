@@ -11,14 +11,15 @@ from bmesh.types import BMVert
 from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty, StringProperty
 from bpy.types import Operator, Panel, Scene, WindowManager
 from bpy.utils import register_class, unregister_class
-from math import ceil, cos, floor, sin, pi
+from math import ceil, cos, degrees, floor, sin, pi
 from mathutils import Vector, Matrix
+from mathutils.geometry import barycentric_transform
 
 bl_info = {
     "name": "1D UV Tools",
     "description": "Tools for working with UV Maps",
     "author": "Nikita Akimov, Paul Kotelevets",
-    "version": (1, 2, 5),
+    "version": (1, 3, 8),
     "blender": (2, 79, 0),
     "location": "View3D > Tool panel > 1D > UV Tools",
     "doc_url": "https://github.com/Korchy/1d_uv_tools",
@@ -226,78 +227,175 @@ class UVTools:
             bpy.ops.object.mode_set(mode=mode)
 
     @classmethod
-    def texel_scale(cls, context, scale_by_x=True, scale_by_y=True):
-        # Texel Scale
-        #   return scale of active polygon UV to value before executing Multy Sure Uv
-        #   set scale for other selected polygons UVs to the same value
-        #   shift uv-points by difference of coordinates of any one uv-point of active face before and after Multy Sure Uv
+    def texel_scale_face(cls, context, vertical_threshold=15):
+        # Retexel
+        #   "face" version - used with face selection mode in 3D_VIEW + active face + selection
+        #   after executing Sure Uv we need to return uv-face of active face to its state before executing
+        #       and apply this transform for all uv-points of selected faces
+        #   1 calculate source transform (3 vectors of 3 points) on uv-face of active face
+        #   2 execute Multy Sure Uv
+        #   3 calculate dest transform (3 vectors of 3 points) on uv-face of active face
+        #   4 apply transform to all uv-points of selected faces
+        print('RETEXEL: face active + selection mode')
         # switch to Object mode
-        mode = context.active_object.mode
-        if context.active_object.mode == 'EDIT':
+        mode = context.active_object.mode if context.active_object.mode != 'OBJECT' else None
+        if mode is not None:
             bpy.ops.object.mode_set(mode='OBJECT')
+        # filter selected faces by vertical threshold
+        active_face_id = context.object.data.polygons.active
+        bm = bmesh.new()
+        bm.from_mesh(context.active_object.data)
+        bm.faces.ensure_lookup_table()
+        bm_active_face = next((_face for _face in bm.faces if _face.index == active_face_id), None)
+        active_face_normal_vert_diff = round(degrees(bm_active_face.normal.angle(Vector((0.0, 0.0, 1.0)))), 2)  # 0 - 180
+        for face in (_face for _face in bm.faces if _face.select):
+            face_normal_vert_diff = round(degrees(face.normal.angle(Vector((0.0, 0.0, 1.0)))), 2)
+            if  abs(face_normal_vert_diff - active_face_normal_vert_diff) > vertical_threshold:
+                face.select = False
+        bm.to_mesh(context.active_object.data)
+        bm.free()
+        # 1. get source 3 uv-point coordinates for transformations
         # active UV layer
         uv_layer = cls._active_uv_layer(obj=context.active_object)
-        # 1. get source scale lengths by X and Y of the UV by active face
         active_face = context.object.data.polygons[context.object.data.polygons.active]
-        # get UV points for active polygon
-        active_face_uv_points = cls._uv_points(faces_list=[active_face,], uv_layer=uv_layer)
-        # find max/min by X and Y
-        min_x_point = min(active_face_uv_points, key=lambda _point: _point.uv.x)
-        max_x_point = max(active_face_uv_points, key=lambda _point: _point.uv.x)
-        min_y_point = min(active_face_uv_points, key=lambda _point: _point.uv.y)
-        max_y_point = max(active_face_uv_points, key=lambda _point: _point.uv.y)
-        # get src x and y lengths
-        src_x = max_x_point.uv.x - min_x_point.uv.x
-        src_y = max_y_point.uv.y - min_y_point.uv.y
-        # get src coordinates of one point
-        src_co = Vector((active_face_uv_points[0].uv.x, active_face_uv_points[0].uv.y))
+        # get longest uv-edge on uv-face from active face
+        active_face_mesh_loops = [uv_layer.data[loop_index] for loop_index in active_face.loop_indices]
+        # get 3 points on active face to calculate transformation
+        src_triangle_points = active_face_mesh_loops[:3]
+        src_triangle_co = [Vector(_uv_point.uv).to_3d() for _uv_point in src_triangle_points]
         # 2. execute Multi Sure UV
-        # change mode back to correctly work of Multy Sure UV, and after its execution switch back to edit mode
-        bpy.ops.object.mode_set(mode=mode)
-        bpy.ops.uvtools.multy_sureuv()
-        if context.active_object.mode == 'EDIT':
-            bpy.ops.object.mode_set(mode='OBJECT')
-        # 3. get current scale lengths by X and Y of the UV by active face
-        # uv_layer, active_face, active_face_uv_points - renew, because all of them were lost after object mode changing
-        uv_layer = cls._active_uv_layer(obj=context.active_object)
-        active_face = context.object.data.polygons[context.object.data.polygons.active]
-        active_face_uv_points = cls._uv_points(faces_list=[active_face, ], uv_layer=uv_layer)
-        # find max/min by X and Y
-        min_x_point = min(active_face_uv_points, key=lambda _point: _point.uv.x)
-        max_x_point = max(active_face_uv_points, key=lambda _point: _point.uv.x)
-        min_y_point = min(active_face_uv_points, key=lambda _point: _point.uv.y)
-        max_y_point = max(active_face_uv_points, key=lambda _point: _point.uv.y)
-        # get current x and y lengths
-        current_x = max_x_point.uv.x - min_x_point.uv.x
-        current_y = max_y_point.uv.y - min_y_point.uv.y
-        # 4. get scale factor by X and Y and move factor
-        scale_factor_x = src_x / current_x
-        scale_factor_y = src_y / current_y
-        # 5. multiply each UV point coordinates by scale factor
-        # process uv points only from selected faces
+        #   use as function not to switch object/edit mode, not to lose previously calculated data when switching mode
+        cls.box_map(
+            all_scale_def=context.window_manager.uv_tools_1d_prop_omsureuv_all_scale_def,
+            x_offset_def=context.window_manager.uv_tools_1d_prop_omsureuv_offset[0],
+            y_offset_def=context.window_manager.uv_tools_1d_prop_omsureuv_offset[1],
+            z_offset_def=context.window_manager.uv_tools_1d_prop_omsureuv_offset[2],
+            x_rot_def=context.window_manager.uv_tools_1d_prop_omsureuv_rot[0],
+            y_rot_def=context.window_manager.uv_tools_1d_prop_omsureuv_rot[1],
+            z_rot_def=context.window_manager.uv_tools_1d_prop_omsureuv_rot[2],
+            tex_aspect=1.0,
+            obj_mode='OBJECT'
+        )
+        # 3. get 3 uv-point coordinates after Multy Sure Uv
+        dest_triangle_co = [Vector(_uv_point.uv).to_3d() for _uv_point in src_triangle_points]
+        # points to apply transformation
         selected_faces_uv_points = cls._uv_points(
             faces_list=[_face for _face in context.object.data.polygons if _face.select],
             uv_layer=uv_layer
         )
+        # 4. apply transform from active face to all selected faces uv-points
         for uv_point in selected_faces_uv_points:
-            # scale
-            if scale_by_x:
-                uv_point.uv.x = scale_factor_x * uv_point.uv.x
-            if scale_by_y:
-                uv_point.uv.y = scale_factor_y * uv_point.uv.y
-        # 6. shift each UV point coordinates by move factor
-        # get current coordinates of one point
-        current_co = Vector((active_face_uv_points[0].uv.x, active_face_uv_points[0].uv.y))
-        # get move factor
-        move_factor = current_co - src_co
-        # shift by move factor
-        # process uv points only from selected faces
-        for uv_point in selected_faces_uv_points:
-            # move
-            uv_point.uv -= move_factor
-        c_co = active_face_uv_points[0].uv
+            wco = uv_point.uv.to_3d()
+            wco = barycentric_transform(wco, *dest_triangle_co, *src_triangle_co)
+            uv_point.uv = wco.to_2d()
         # return mode back
-        bpy.ops.object.mode_set(mode=mode)
+        if mode is not None:
+            bpy.ops.object.mode_set(mode=mode)
+
+    @classmethod
+    def texel_scale_face_only_active(cls, context):
+        # Retexel
+        #   "face only active" version - used when only one active face is in 3D_VIEW
+        #   check what uv-edge of activ face is more horizontal
+        #   get next uv-edge and rotate uv-face so, to make this next edge horizontal
+        #   repeat on each click (continuously rotate uv-face on each click)
+        print('RETEXEL: face only active mode')
+        # switch to Object mode
+        mode = context.active_object.mode if context.active_object.mode != 'OBJECT' else None
+        if mode is not None:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        # get data for rotation
+        uv_layer = cls._active_uv_layer(obj=context.active_object)
+        active_face = context.object.data.polygons[context.object.data.polygons.active]
+        # get longest uv-edge on uv-face from active face
+        active_face_mesh_loops = [uv_layer.data[loop_index] for loop_index in active_face.loop_indices]
+        # active_face_uv_points = cls._uv_points(faces_list=[active_face, ], uv_layer=uv_layer)
+        selected_faces_uv_points = cls._uv_points(
+            faces_list=[_face for _face in context.object.data.polygons if _face.select],
+            uv_layer=uv_layer
+        )
+        # find left bottom uv-point, we will transform to this point
+        #   sort by left (x), and next find the bottom (y)
+        mesh_loops_x_sorted = sorted(active_face_mesh_loops, key=lambda _uv_point: round(_uv_point.uv.x, 4))
+        lb_point = min(mesh_loops_x_sorted, key=lambda _uv_point: round(_uv_point.uv.y, 4))
+        # get 3 points to calculate transformation to
+        #   we have 1 left bottom uv-point, this is the center point
+        #   1-st and 3-rd uv-point we can get as horizontal and vertical vectors
+        dest_triangle_co = [(lb_point.uv + Vector((0.0, 1.0))).to_3d(),
+                            lb_point.uv.to_3d(),
+                            (lb_point.uv + Vector((1.0, 0.0))).to_3d()]
+        # get next point, we will transform from this point
+        next_point_idx = active_face_mesh_loops.index(lb_point) + 1
+        next_point = active_face_mesh_loops[0] if next_point_idx == len(active_face_mesh_loops) \
+            else active_face_mesh_loops[next_point_idx]
+        # get next-next point to have 3 point
+        next2_point_idx = active_face_mesh_loops.index(next_point) + 1
+        next2_point = active_face_mesh_loops[0] if next2_point_idx == len(active_face_mesh_loops) \
+            else active_face_mesh_loops[next2_point_idx]
+        # get 3 points to calculate transformation from
+        #   we have 2 uv-points (next_point and next2_point)
+        #   3-rd uv-point we can get as normal to next2_point - next_point with length of 1
+        v =next2_point.uv - next_point.uv
+        v_normal = Vector((-v.y, v.x))  # CV (Paul works better)
+        # v_normal = Vector((v.y, -v.x))    # CCV
+        src_triangle_co = [(next_point.uv + v_normal.normalized()).to_3d(),    # length = 1
+                           next_point.uv.to_3d(),
+                           (next_point.uv + v.normalized()).to_3d()            # length = 1
+                           ]
+        # 4. apply transform from active face to all selected faces uv-points
+        for uv_point in selected_faces_uv_points:
+            wco = uv_point.uv.to_3d()
+            wco = barycentric_transform(wco, *src_triangle_co, *dest_triangle_co)
+            uv_point.uv = wco.to_2d()
+        # return mode back
+        if mode is not None:
+            bpy.ops.object.mode_set(mode=mode)
+
+    @classmethod
+    def texel_scale_edge(cls, context):
+        # Retexel
+        # "edge mode" - rotate uv-points of selected faces to make horizontally uv-edge of active edge of active face
+        #   active edge must be always on active face
+        print('RETEXEL: edge active mode')
+        # switch to Object mode
+        mode = context.active_object.mode if context.active_object.mode != 'OBJECT' else None
+        if mode is not None:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        # get data for rotation
+        uv_layer = cls._active_uv_layer(obj=context.active_object)
+        active_edge = cls.active_edge(context=context, obj=context.active_object)
+        active_edge_vertices_idxs = active_edge.vertices[:]
+        face_with_active_edge = context.object.data.polygons[context.object.data.polygons.active]   # active face
+        # get uv-points for counting rotation
+        edge_mesh_loops = []
+        for _i, loop_id in enumerate(face_with_active_edge.loop_indices):
+            if context.object.data.vertices[face_with_active_edge.vertices[_i]].index in active_edge_vertices_idxs:
+                edge_mesh_loops.append(uv_layer.data[loop_id])
+        # all uv-points to rotate
+        selected_faces_uv_points = cls._uv_points(
+            faces_list=[_face for _face in context.object.data.polygons if _face.select],
+            uv_layer=uv_layer
+        )
+        # get 3 points to calculate transformation
+        #   we have 2 uv-points from active edge
+        #   3-rd uv-point we can get as normal to active uv-edge with length of active uv-edge
+        v = edge_mesh_loops[1].uv - edge_mesh_loops[0].uv
+        v_normal = Vector((-v.y, v.x))  # CV (Paul works better)
+        # v_normal = Vector((v.y, -v.x))    # CCV
+        p0 = edge_mesh_loops[0].uv + v_normal
+        src_triangle_co = [p0.to_3d(), edge_mesh_loops[0].uv.to_3d(), edge_mesh_loops[1].uv.to_3d()]
+        # get 3 uv-point coordinates for having active uv-edge horizontal (rotate around central point)
+        dest_p0 = Vector((0.0, 1.0)) * (p0 - edge_mesh_loops[0].uv).length + edge_mesh_loops[0].uv
+        dest_p3 = Vector((1.0, 0.0)) * (edge_mesh_loops[1].uv - edge_mesh_loops[0].uv).length + edge_mesh_loops[0].uv
+        dest_triangle_co = [dest_p0.to_3d(), edge_mesh_loops[0].uv.to_3d(), dest_p3.to_3d()]
+        # 4. apply transform from active face to all selected faces uv-points
+        for uv_point in selected_faces_uv_points:
+            wco = uv_point.uv.to_3d()
+            wco = barycentric_transform(wco, *src_triangle_co, *dest_triangle_co)
+            uv_point.uv = wco.to_2d()
+        # return mode back
+        if mode is not None:
+            bpy.ops.object.mode_set(mode=mode)
 
 
     # EXPERIMENTAL
@@ -479,12 +577,24 @@ class UVTools:
             bpy.ops.object.mode_set(mode='EDIT', toggle=False)
 
     @staticmethod
-    def box_map(all_scale_def, x_offset_def, y_offset_def, z_offset_def, x_rot_def, y_rot_def, z_rot_def, tex_aspect):
+    def box_map(all_scale_def, x_offset_def, y_offset_def, z_offset_def, x_rot_def, y_rot_def, z_rot_def, tex_aspect,
+                obj_mode=None):
         # Multy Sure UV from 1D_Scripts
+        #   obj_mode - force setting of the object's mode
+        #       None - function was called from Multy Sure UV operator
+        #       not None - function was called from another UVTools function, with specified object (edit|object) mode
         obj = bpy.context.active_object
         mesh = obj.data
 
-        is_editmode = (obj.mode == 'EDIT')
+        # print(all_scale_def, x_offset_def, y_offset_def, z_offset_def, x_rot_def, y_rot_def, z_rot_def, tex_aspect,
+        #         obj_mode)
+
+        if obj_mode is not None:
+            # new
+            is_editmode = (obj_mode == 'EDIT')
+        else:
+            # original
+            is_editmode = (obj.mode == 'EDIT')
 
         # if in EDIT Mode switch to OBJECT
         if is_editmode:
@@ -552,7 +662,12 @@ class UVTools:
         # uvs = mesh.uv_loop_layers[mesh.uv_loop_layers.active_index].data
         uvs = mesh.uv_layers.active.data
         for i, pol in enumerate(mesh.polygons):
-            if not is_editmode or mesh.polygons[i].select:
+            # if not is_editmode or mesh.polygons[i].select:    # original
+            # object mode and come from operator - process all faces
+            # edit mode and come from operator - process only selected faces
+            # object or edit mode and called as function - process only selected faces
+            if ((obj_mode is None) and (not is_editmode or mesh.polygons[i].select)) \
+                    or ((obj_mode is not None) and mesh.polygons[i].select):
                 for j, loop in enumerate(mesh.polygons[i].loop_indices):
                     v_idx = mesh.loops[loop].vertex_index
                     # print('before[%s]:' % v_idx)
@@ -691,18 +806,115 @@ class UVTools:
         return Vector((x, y))
 
     @staticmethod
-    def _rotation_matrix(src_vector, dest_vector):
+    def _rotation_matrix(src_vector, dest_vector, size=2):
         angle = src_vector.angle(dest_vector)  # rad
         axis = src_vector.cross(dest_vector)
         if axis < 0.0:
             angle = -angle
-        return Matrix.Rotation(angle, 2, 'Z')
+        return Matrix.Rotation(angle, size, 'Z')
+
+    @staticmethod
+    def _translation_matrix(src_vector, dest_vector):
+        # create translation matrix from src_vector to dest_vector
+        #   src_vector = Vector(x, y)
+        #   dest_vector = Vector(x, y)
+        translation_vector = dest_vector - src_vector
+        return Matrix((
+            (1.0, 0.0, translation_vector.x),
+            (0.0, 1.0, translation_vector.y),
+            (0.0, 0.0, 1.0)
+        ))
+
+    @staticmethod
+    def _vector3(vector):
+        # transform 2d vector Vector(x, y) to 3d vector Vector(x, y, 1.0)
+        #   only this type of 3d vector could be used in operations in 2d-space with 3x3 transform matrices
+        return Vector((vector.x, vector.y, 1.0))
 
     @staticmethod
     def _uv_points(faces_list, uv_layer):
         # get list of UV points for mesh faces from faces_list
         # [uv_point, uv_point, ...]
         return [uv_layer.data[loop_index] for _face in faces_list for loop_index in _face.loop_indices]
+
+    @staticmethod
+    def active_edge(context, obj):
+        # get active edge on the mesh
+        #   return edge or None
+        mode = context.active_object.mode if context.active_object.mode != 'OBJECT' else None
+        if mode is not None:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bm.edges.ensure_lookup_table()
+        active_edge = None
+        if bm.select_history:
+            active_edge_bm = next((_edge for _edge in reversed(bm.select_history) \
+                                   if isinstance(_edge, bmesh.types.BMEdge)), None)
+            active_edge = context.object.data.edges[active_edge_bm.index] if active_edge_bm else None
+        bm.free()
+        if mode is not None:
+            bpy.ops.object.mode_set(mode=mode)
+        return active_edge
+
+    @staticmethod
+    def selected_faces(context):
+        # get selected faces list
+        mode = context.active_object.mode if context.active_object.mode != 'OBJECT' else None
+        if mode is not None:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        selected_faces = [_face for _face in context.active_object.data.polygons if _face.select]
+        # return mode back
+        if mode is not None:
+            bpy.ops.object.mode_set(mode=mode)
+        return selected_faces
+
+    @staticmethod
+    def active_face(context):
+        # get active face of the object
+        mode = context.active_object.mode if context.active_object.mode != 'OBJECT' else None
+        if mode is not None:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        active_face_index = context.active_object.data.polygons.active
+        active_face = context.active_object.data.polygons[active_face_index] if active_face_index != -1 else None
+        if mode is not None:
+            bpy.ops.object.mode_set(mode=mode)
+        return active_face
+
+    @staticmethod
+    def _chunks(lst, n, offset=0):
+        for i in range(0, len(lst), n - offset):
+            yield lst[i:i + n]
+
+    @classmethod
+    def _rotate_uv_around_point(cls, center_of_rotation, point_to_rotate, dest_vector, uv_points):
+        # rotate point_to_rotate around center_of_rotation on angle got by dest_vector and apply this rotation to
+        #       all of uv_points
+        #   center_of_rotation = Vector(x, y)
+        #   point_to_rotate = Vector(x, y)
+        #   dest_vector = Vector(x, y)
+        #   uv_points = [point, ...]
+        # translation matrix to center of rotation
+        matrix_transl = cls._translation_matrix(
+            dest_vector=center_of_rotation.uv,
+            src_vector=Vector((0.0, 0.0))
+        )
+        # inverted translation matrix
+        matrix_transl_inv = matrix_transl.copy()
+        matrix_transl_inv.invert()
+        # rotation matrix to rotate point_to_rotate around center_of_rotation
+        matrix_rot = cls._rotation_matrix(
+            src_vector=center_of_rotation.uv - point_to_rotate.uv,
+            dest_vector=dest_vector,
+            size=3
+        )
+        for point in uv_points:
+            # move to (0.0, 0.0)
+            point.uv = (matrix_transl_inv * cls._vector3(point.uv)).to_2d()
+            # rotate
+            point.uv = (matrix_rot * cls._vector3(point.uv)).to_2d()
+            # move back to (rotation_center.x, rotation_center.y)
+            point.uv = (matrix_transl * cls._vector3(point.uv)).to_2d()
 
     @staticmethod
     def ui(layout, context, area):
@@ -715,16 +927,11 @@ class UVTools:
                 operator='uvtools.texel_scale',
                 icon='FORCE_TEXTURE'
             )
-            op.scale_by_x = context.window_manager.uv_tools_1d_prop_texel_scale_by_x
-            op.scale_by_y = context.window_manager.uv_tools_1d_prop_texel_scale_by_y
+            op.rotate_threshold = context.window_manager.uv_tools_1d_prop_retexel_rotate_threshold
             row = box.row()
             row.prop(
                 data=context.window_manager,
-                property='uv_tools_1d_prop_texel_scale_by_x'
-            )
-            row.prop(
-                data=context.window_manager,
-                property='uv_tools_1d_prop_texel_scale_by_y'
+                property='uv_tools_1d_prop_retexel_rotate_threshold'
             )
             # Multy Sure UV
             box = layout.box().column()
@@ -891,23 +1098,42 @@ class UVTools_OT_texel_scale(Operator):
     bl_label = 'Retexel'
     bl_options = {'REGISTER', 'UNDO'}
 
-    scale_by_x = BoolProperty(
-        name='Scale by X',
-        default=True
-    )
-    scale_by_y = BoolProperty(
-        name='Scale by Y',
-        default=True
+    rotate_threshold = FloatProperty(
+        name='Rotation threshold',
+        default=15.0,
+        max=90.0,
+        min=0.0,
+        precision=2
     )
 
     def execute(self, context):
-        UVTools.texel_scale(
-            context=context,
-            scale_by_x=self.scale_by_x,
-            scale_by_y=self.scale_by_y
-        )
+        if context.tool_settings.mesh_select_mode[:] == (False, True, False):
+            # edge selection mode in 3D_VIEW area
+            active_edge = UVTools.active_edge(context=context, obj=context.active_object)
+            if active_edge:
+                UVTools.texel_scale_edge(
+                    context=context
+                )
+        elif context.tool_settings.mesh_select_mode[:] == (False, False, True):
+            # face selection mode in 3D_VIEW area
+            selected_faces_idxs = [_face.index for _face in UVTools.selected_faces(context=context)]
+            active_face = UVTools.active_face(context=context)
+            if active_face:
+                # only single active face and no other selection
+                # use rotation only if angle between vertical and active face normal less than threshold
+                use_rotation = True if round(degrees(Vector((0.0, 0.0, 1.0)).angle(active_face.normal)), 2) \
+                                       < self.rotate_threshold else False
+                if len(selected_faces_idxs) == 0 or selected_faces_idxs == [active_face.index,]:
+                    UVTools.texel_scale_face_only_active(
+                        context=context
+                    )
+                # active face + selection
+                elif len(selected_faces_idxs) > 0:
+                    UVTools.texel_scale_face(
+                        context=context,
+                        vertical_threshold=self.rotate_threshold
+                    )
         return {'FINISHED'}
-
 
 class UVTools_PaObjMultySureUV(Operator):
 
@@ -1000,18 +1226,18 @@ class UVTools_SureUVWOperator(Operator):
         # print('** execute **')
         # print(self.action)
 
-        all_scale_def = self.size
-        tex_aspect = self.texaspect
+        # all_scale_def = self.size
+        # tex_aspect = self.texaspect
+        #
+        # x_offset_def = self.offset[0]
+        # y_offset_def = self.offset[1]
+        # z_offset_def = self.offset[2]
+        # x_rot_def = self.rot[0]
+        # y_rot_def = self.rot[1]
+        # z_rot_def = self.rot[2]
+        # xoffset_def = self.xoffset
+        # yoffset_def = self.yoffset
 
-        x_offset_def = self.offset[0]
-        y_offset_def = self.offset[1]
-        z_offset_def = self.offset[2]
-        x_rot_def = self.rot[0]
-        y_rot_def = self.rot[1]
-        z_rot_def = self.rot[2]
-
-        xoffset_def = self.xoffset
-        yoffset_def = self.yoffset
         zrot_def = self.zrot
 
         if self.flag90:
@@ -1233,13 +1459,12 @@ def register(ui=True):
         name='Apply Scale',
         default=False
     )
-    WindowManager.uv_tools_1d_prop_texel_scale_by_x = BoolProperty(
-        name='Scale by X',
-        default=True
-    )
-    WindowManager.uv_tools_1d_prop_texel_scale_by_y = BoolProperty(
-        name='Scale by Y',
-        default=True
+    WindowManager.uv_tools_1d_prop_retexel_rotate_threshold = FloatProperty(
+        name='Rotation threshold',
+        default=15.0,
+        max=90.0,
+        min=0.0,
+        precision=2
     )
     WindowManager.uv_tools_1d_prop_omsureuv_all_scale_def = FloatProperty(
         # Multy SureUV from 1D_Scripts
@@ -1292,8 +1517,7 @@ def unregister(ui=True):
     del WindowManager.uv_tools_1d_prop_omsureuv_all_scale_def
     del WindowManager.uv_tools_1d_prop_omsureuv_rot
     del WindowManager.uv_tools_1d_prop_omsureuv_offset
-    del WindowManager.uv_tools_1d_prop_texel_scale_by_y
-    del WindowManager.uv_tools_1d_prop_texel_scale_by_x
+    del WindowManager.uv_tools_1d_prop_retexel_rotate_threshold
     del WindowManager.uv_tools_1d_prop_fit_to_tile_add_scale
     del WindowManager.uv_tools_1d_prop_fit_to_tile_v2
     del WindowManager.uv_tools_1d_prop_fit_to_tile_v1
