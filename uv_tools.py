@@ -19,7 +19,7 @@ bl_info = {
     "name": "1D UV Tools",
     "description": "Tools for working with UV Maps",
     "author": "Nikita Akimov, Paul Kotelevets",
-    "version": (1, 3, 8),
+    "version": (1, 3, 9),
     "blender": (2, 79, 0),
     "location": "View3D > Tool panel > 1D > UV Tools",
     "doc_url": "https://github.com/Korchy/1d_uv_tools",
@@ -229,7 +229,7 @@ class UVTools:
     @classmethod
     def texel_scale_face(cls, context, vertical_threshold=15):
         # Retexel
-        #   "face" version - used with face selection mode in 3D_VIEW + active face + selection
+        #   "active face + selection" version - used with face selection mode in 3D_VIEW + active face + selection
         #   after executing Sure Uv we need to return uv-face of active face to its state before executing
         #       and apply this transform for all uv-points of selected faces
         #   1 calculate source transform (3 vectors of 3 points) on uv-face of active face
@@ -249,6 +249,11 @@ class UVTools:
         bm_active_face = next((_face for _face in bm.faces if _face.index == active_face_id), None)
         active_face_normal_vert_diff = round(degrees(bm_active_face.normal.angle(Vector((0.0, 0.0, 1.0)))), 2)  # 0 - 180
         for face in (_face for _face in bm.faces if _face.select):
+            # deselect faces with zero-length normal (faces with zero area, ex: all vertices are in the same location)
+            if face.normal.length == 0.0:
+                face.select = False
+                continue
+            # deselect faces by threshold
             face_normal_vert_diff = round(degrees(face.normal.angle(Vector((0.0, 0.0, 1.0)))), 2)
             if  abs(face_normal_vert_diff - active_face_normal_vert_diff) > vertical_threshold:
                 face.select = False
