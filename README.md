@@ -25,7 +25,7 @@ With enabled "Pack to Cursor" option - pack along the cursor.
 
 Current version
 -
-1.3.9.
+1.4.0.
 
 Blender version
 -
@@ -33,6 +33,9 @@ Blender version
 
 Version history
 -
+1.4.0
+- Added transformation made scale and angle to the INFO area
+
 1.3.9
 - Added zero lengths normal filter to the retexel "face + selection" mode
 

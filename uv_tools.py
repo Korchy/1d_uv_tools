@@ -3,7 +3,7 @@
 #
 # GitHub
 #    https://github.com/Korchy/1d_uv_tools
-from platform import mac_ver
+
 
 import bmesh
 import bpy
@@ -19,7 +19,7 @@ bl_info = {
     "name": "1D UV Tools",
     "description": "Tools for working with UV Maps",
     "author": "Nikita Akimov, Paul Kotelevets",
-    "version": (1, 3, 9),
+    "version": (1, 4, 0),
     "blender": (2, 79, 0),
     "location": "View3D > Tool panel > 1D > UV Tools",
     "doc_url": "https://github.com/Korchy/1d_uv_tools",
@@ -227,7 +227,7 @@ class UVTools:
             bpy.ops.object.mode_set(mode=mode)
 
     @classmethod
-    def texel_scale_face(cls, context, vertical_threshold=15):
+    def texel_scale_face(cls, context, op, vertical_threshold=15):
         # Retexel
         #   "active face + selection" version - used with face selection mode in 3D_VIEW + active face + selection
         #   after executing Sure Uv we need to return uv-face of active face to its state before executing
@@ -247,6 +247,7 @@ class UVTools:
         bm.from_mesh(context.active_object.data)
         bm.faces.ensure_lookup_table()
         bm_active_face = next((_face for _face in bm.faces if _face.index == active_face_id), None)
+        # filter - remove collapsed faces and faces by threshold from selection
         active_face_normal_vert_diff = round(degrees(bm_active_face.normal.angle(Vector((0.0, 0.0, 1.0)))), 2)  # 0 - 180
         for face in (_face for _face in bm.faces if _face.select):
             # deselect faces with zero-length normal (faces with zero area, ex: all vertices are in the same location)
@@ -293,12 +294,29 @@ class UVTools:
             wco = uv_point.uv.to_3d()
             wco = barycentric_transform(wco, *dest_triangle_co, *src_triangle_co)
             uv_point.uv = wco.to_2d()
+        # output transformation made scale and angle factors to INFO
+        src_vector = (src_triangle_co[0] - src_triangle_co[1]).to_2d()      # first vector of src triangle
+        dest_vector = (dest_triangle_co[0] - dest_triangle_co[1]).to_2d()   # first vector of dest triangle
+        transform_scale = src_vector.length / dest_vector.length
+        transform_scale_x = (src_vector.x / dest_vector.x) if dest_vector.x != 0 else 0.0
+        transform_scale_y = (src_vector.y / dest_vector.y) if dest_vector.y != 0 else 0.0
+        transform_angle = dest_vector.angle(src_vector)
+        transform_angle_x = dest_vector.angle(Vector((0.0, 1.0)))
+        op.report(
+            type={'INFO'},
+            message='scale: ' + str(round(transform_scale, 4)) + ', ' \
+                    + '(x: ' + str(round(transform_scale_x, 4))  + ', '\
+                    + 'y: ' + str(round(transform_scale_y, 4)) + ') ' \
+                    + 'angle: ' + str(round(degrees(transform_angle), 2)) + ' ' \
+                    + '('  + str(round(degrees(transform_angle_x), 2)) + ')' \
+                    + ' deg'
+        )
         # return mode back
         if mode is not None:
             bpy.ops.object.mode_set(mode=mode)
 
     @classmethod
-    def texel_scale_face_only_active(cls, context):
+    def texel_scale_face_only_active(cls, context, op):
         # Retexel
         #   "face only active" version - used when only one active face is in 3D_VIEW
         #   check what uv-edge of activ face is more horizontal
@@ -352,12 +370,23 @@ class UVTools:
             wco = uv_point.uv.to_3d()
             wco = barycentric_transform(wco, *src_triangle_co, *dest_triangle_co)
             uv_point.uv = wco.to_2d()
+        # output transformation made angle factor to INFO
+        src_vector = (src_triangle_co[0] - src_triangle_co[1]).to_2d()      # first vector of src triangle
+        dest_vector = (dest_triangle_co[0] - dest_triangle_co[1]).to_2d()   # first vector of dest triangle
+        transform_angle = dest_vector.angle(src_vector)
+        transform_angle_x = dest_vector.angle(Vector((0.0, 1.0)))
+        op.report(
+            type={'INFO'},
+            message='angle: ' + str(round(degrees(transform_angle), 2)) + ' ' \
+                    + '('  + str(round(degrees(transform_angle_x), 2)) + ')' \
+                    + ' deg'
+        )
         # return mode back
         if mode is not None:
             bpy.ops.object.mode_set(mode=mode)
 
     @classmethod
-    def texel_scale_edge(cls, context):
+    def texel_scale_edge(cls, context, op):
         # Retexel
         # "edge mode" - rotate uv-points of selected faces to make horizontally uv-edge of active edge of active face
         #   active edge must be always on active face
@@ -398,6 +427,17 @@ class UVTools:
             wco = uv_point.uv.to_3d()
             wco = barycentric_transform(wco, *src_triangle_co, *dest_triangle_co)
             uv_point.uv = wco.to_2d()
+        # output transformation made scale and angle factors to INFO
+        src_vector = (src_triangle_co[0] - src_triangle_co[1]).to_2d()      # first vector of src triangle
+        dest_vector = (dest_triangle_co[0] - dest_triangle_co[1]).to_2d()   # first vector of dest triangle
+        transform_angle = dest_vector.angle(src_vector)
+        transform_angle_x = dest_vector.angle(Vector((0.0, 1.0)))
+        op.report(
+            type={'INFO'},
+            message='angle: ' + str(round(degrees(transform_angle), 2)) + ' ' \
+                    + '(' + str(round(degrees(transform_angle_x), 2)) + ')' \
+                    + ' deg'
+        )
         # return mode back
         if mode is not None:
             bpy.ops.object.mode_set(mode=mode)
@@ -1117,7 +1157,8 @@ class UVTools_OT_texel_scale(Operator):
             active_edge = UVTools.active_edge(context=context, obj=context.active_object)
             if active_edge:
                 UVTools.texel_scale_edge(
-                    context=context
+                    context=context,
+                    op=self
                 )
         elif context.tool_settings.mesh_select_mode[:] == (False, False, True):
             # face selection mode in 3D_VIEW area
@@ -1130,12 +1171,14 @@ class UVTools_OT_texel_scale(Operator):
                                        < self.rotate_threshold else False
                 if len(selected_faces_idxs) == 0 or selected_faces_idxs == [active_face.index,]:
                     UVTools.texel_scale_face_only_active(
-                        context=context
+                        context=context,
+                        op=self
                     )
                 # active face + selection
                 elif len(selected_faces_idxs) > 0:
                     UVTools.texel_scale_face(
                         context=context,
+                        op=self,
                         vertical_threshold=self.rotate_threshold
                     )
         return {'FINISHED'}
