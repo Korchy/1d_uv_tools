@@ -19,7 +19,7 @@ bl_info = {
     "name": "1D UV Tools",
     "description": "Tools for working with UV Maps",
     "author": "Nikita Akimov, Paul Kotelevets",
-    "version": (1, 5, 0),
+    "version": (1, 6, 0),
     "blender": (2, 79, 0),
     "location": "View3D > Tool panel > 1D > UV Tools",
     "doc_url": "https://github.com/Korchy/1d_uv_tools",
@@ -443,7 +443,7 @@ class UVTools:
             bpy.ops.object.mode_set(mode=mode)
 
     @classmethod
-    def quad_level(cls, context):
+    def quad_level(cls, context, pin_level=False):
         # Quad Level
         # rotates selected faces on the UV horizontally by the longest edge
         # switch to Object mode
@@ -470,6 +470,10 @@ class UVTools:
                 dest_vector=Vector((1.0, 0.0)),
                 uv_points=[_loop[uv_layer] for _loop in face.loops]
             )
+            # pin longest edge
+            if pin_level:
+                longest_uv_edge[0].pin_uv = True
+                longest_uv_edge[1].pin_uv = True
         # save changed data to mesh
         bm.to_mesh(context.active_object.data)
         bm.free()
@@ -1129,9 +1133,15 @@ class UVTools:
                 property='uv_tools_1d_prop_fit_to_tile_add_scale'
             )
             # Quad Level
-            layout.operator(
+            box = layout.box()
+            op = box.operator(
                 operator='uvtools.quad_level',
                 icon='NLA'
+            )
+            op.pin_level = context.window_manager.uv_tools_1d_prop_quad_level_pin
+            box.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_quad_level_pin'
             )
             # ToDo: EXPERIMENTAL
             layout.separator()
@@ -1517,9 +1527,16 @@ class UVTools_OT_quad_level(Operator):
     bl_label = 'Quad Level'
     bl_options = {'REGISTER', 'UNDO'}
 
+    pin_level = BoolProperty(
+        # Pin longest edge after rotation
+        name='Pin Level',
+        default=False
+    )
+
     def execute(self, context):
         UVTools.quad_level(
-            context=context
+            context=context,
+            pin_level=self.pin_level
         )
         return {'FINISHED'}
 
@@ -1607,6 +1624,11 @@ def register(ui=True):
         name='disp_omsureuv',
         default=False
     )
+    WindowManager.uv_tools_1d_prop_quad_level_pin = BoolProperty(
+        # Pin edge for the Quad Level tool
+        name='Pin Level',
+        default=False
+    )
     register_class(UVTools_OT_uvpack)
     register_class(UVTools_OT_fit_to_tile)
     register_class(UVTools_OT_texel_scale)
@@ -1635,6 +1657,7 @@ def unregister(ui=True):
     unregister_class(UVTools_OT_texel_scale)
     unregister_class(UVTools_OT_fit_to_tile)
     unregister_class(UVTools_OT_uvpack)
+    del WindowManager.uv_tools_1d_prop_quad_level_pin
     del WindowManager.uv_tools_1d_prop_disp_omsureuv
     del WindowManager.uv_tools_1d_prop_omsureuv_all_scale_def
     del WindowManager.uv_tools_1d_prop_omsureuv_rot

@@ -29,7 +29,7 @@ Rotates faces on the UV-Map to make it's longest edge horizontal for selected fa
 
 Current version
 -
-1.5.0.
+1.6.0.
 
 Blender version
 -
@@ -37,6 +37,9 @@ Blender version
 
 Version history
 -
+1.6.0
+- Added "Pin level" checkbox for "Quad Level" tool
+
 1.5.0
 - Added "Quad Level" tool
 
