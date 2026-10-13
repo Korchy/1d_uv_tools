@@ -19,7 +19,7 @@ bl_info = {
     "name": "1D UV Tools",
     "description": "Tools for working with UV Maps",
     "author": "Nikita Akimov, Paul Kotelevets",
-    "version": (1, 4, 0),
+    "version": (1, 5, 0),
     "blender": (2, 79, 0),
     "location": "View3D > Tool panel > 1D > UV Tools",
     "doc_url": "https://github.com/Korchy/1d_uv_tools",
@@ -438,6 +438,41 @@ class UVTools:
                     + '(' + str(round(degrees(transform_angle_x), 2)) + ')' \
                     + ' deg'
         )
+        # return mode back
+        if mode is not None:
+            bpy.ops.object.mode_set(mode=mode)
+
+    @classmethod
+    def quad_level(cls, context):
+        # Quad Level
+        # rotates selected faces on the UV horizontally by the longest edge
+        # switch to Object mode
+        mode = context.active_object.mode if context.active_object.mode != 'OBJECT' else None
+        if mode is not None:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        # bm
+        bm = bmesh.new()
+        bm.from_mesh(context.active_object.data)
+        # process UV points
+        uv_layer = cls._active_uv_layer(bm)
+        # for each selected face
+        for face in (_face for _face in bm.faces if _face.select ):
+            longest_uv_edge = cls._longest_uv_edge(
+                bm_face=face,
+                uv_layer=uv_layer,
+                bm=bm,
+                offset=(1 if len(face.edges) == 3 else 0),
+            )
+            # rotate uv around first point of the longest uv edge
+            cls._rotate_uv_around_point(
+                center_of_rotation=longest_uv_edge[0],
+                point_to_rotate=longest_uv_edge[1],
+                dest_vector=Vector((1.0, 0.0)),
+                uv_points=[_loop[uv_layer] for _loop in face.loops]
+            )
+        # save changed data to mesh
+        bm.to_mesh(context.active_object.data)
+        bm.free()
         # return mode back
         if mode is not None:
             bpy.ops.object.mode_set(mode=mode)
@@ -877,10 +912,13 @@ class UVTools:
         return Vector((vector.x, vector.y, 1.0))
 
     @staticmethod
-    def _uv_points(faces_list, uv_layer):
+    def _uv_points(faces_list, uv_layer, bm=None):
         # get list of UV points for mesh faces from faces_list
         # [uv_point, uv_point, ...]
-        return [uv_layer.data[loop_index] for _face in faces_list for loop_index in _face.loop_indices]
+        if bm:
+            return [_loop[uv_layer] for _face in faces_list for _loop in _face.loops]
+        else:
+            return [uv_layer.data[loop_index] for _face in faces_list for loop_index in _face.loop_indices]
 
     @staticmethod
     def active_edge(context, obj):
@@ -960,6 +998,24 @@ class UVTools:
             point.uv = (matrix_rot * cls._vector3(point.uv)).to_2d()
             # move back to (rotation_center.x, rotation_center.y)
             point.uv = (matrix_transl * cls._vector3(point.uv)).to_2d()
+
+    @classmethod
+    def _longest_uv_edge(cls, bm_face, uv_layer, bm=None, offset=0):
+        # get longest edge on the uv face (uv loop) of the bmesh face
+        # [uv_point, uv_point, ...]
+        uv_points = cls._uv_points(faces_list=[bm_face], uv_layer=uv_layer, bm=bm)
+        uv_points.append(uv_points[0])  # last point -> first point edge
+        # [[uv_point, uv_point], ...]
+        uv_edges = list(cls._chunks(lst=uv_points, n=2, offset=1))[:-1]
+        # sort by edges length
+        uv_edges_sorted = sorted(
+            uv_edges,
+            key=lambda _uv_edge: (_uv_edge[1].uv - _uv_edge[0].uv).length,
+            reverse=True
+        )
+        # return uv points of the longest uv edge
+        return uv_edges_sorted[0 + offset]
+
 
     @staticmethod
     def ui(layout, context, area):
@@ -1071,6 +1127,11 @@ class UVTools:
             box.prop(
                 data=context.window_manager,
                 property='uv_tools_1d_prop_fit_to_tile_add_scale'
+            )
+            # Quad Level
+            layout.operator(
+                operator='uvtools.quad_level',
+                icon='NLA'
             )
             # ToDo: EXPERIMENTAL
             layout.separator()
@@ -1199,7 +1260,7 @@ class UVTools_PaObjMultySureUV(Operator):
                context.active_object.type == 'MESH'
 
     def execute(self, context):
-        for ob in bpy.context.selected_objects:
+        for ob in context.selected_objects:
             if ob.type == 'MESH':
                 bpy.context.scene.objects.active = ob
                 bpy.ops.uvtools.sureuvw_operator(
@@ -1451,6 +1512,17 @@ class UVTools_OT_select_uvcut_tile(Operator):
         )
         return {'FINISHED'}
 
+class UVTools_OT_quad_level(Operator):
+    bl_idname = 'uvtools.quad_level'
+    bl_label = 'Quad Level'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        UVTools.quad_level(
+            context=context
+        )
+        return {'FINISHED'}
+
 
 # PANELS
 
@@ -1543,6 +1615,7 @@ def register(ui=True):
     register_class(UVTools_OT_uvcut_tile)
     register_class(UVTools_PaObjMultySureUV)
     register_class(UVTools_SureUVWOperator)
+    register_class(UVTools_OT_quad_level)
     if ui:
         register_class(UVTools_PT_panel)
         register_class(UVTools_PT_panel_Viewport)
@@ -1553,6 +1626,7 @@ def unregister(ui=True):
         unregister_class(UVTools_PT_panel_Viewport)
         unregister_class(UVTools_PT_panel)
     # butch clean
+    unregister_class(UVTools_OT_quad_level)
     unregister_class(UVTools_SureUVWOperator)
     unregister_class(UVTools_PaObjMultySureUV)
     unregister_class(UVTools_OT_uvcut_tile)

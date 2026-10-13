@@ -23,9 +23,13 @@ With enabled "Pack to Cursor" option - pack along the cursor.
 - select the uv iceland
 - press "Fit to Tile" to move the selection to the 0.0 point, rotate selection around anchor point by horizontal point and, optionally, scale selection by scale point. 
 
+**Quad Level**
+
+Rotates faces on the UV-Map to make it's longest edge horizontal for selected faces of the mesh.
+
 Current version
 -
-1.4.0.
+1.5.0.
 
 Blender version
 -
@@ -33,6 +37,9 @@ Blender version
 
 Version history
 -
+1.5.0
+- Added "Quad Level" tool
+
 1.4.0
 - Added transformation made scale and angle to the INFO area
 
