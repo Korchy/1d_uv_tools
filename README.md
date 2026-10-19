@@ -27,9 +27,13 @@ With enabled "Pack to Cursor" option - pack along the cursor.
 
 Rotates faces on the UV-Map to make it's longest edge horizontal for selected faces of the mesh.
 
+**Scan Transform**
+
+Splits active mesh on faces. Calls "Multi Sure UV". Compare UV maps before and after execution "Multi Sure UV". Moves faces up in 0 - Max Dist interval depends on the value of the difference Location/Rotation/Scale of the uv-faces before Shure UV and after it.
+
 Current version
 -
-1.6.0.
+1.7.0.
 
 Blender version
 -
@@ -37,6 +41,9 @@ Blender version
 
 Version history
 -
+1.7.0
+- Added "Scan Transform" tool
+
 1.6.0
 - Added "Pin level" checkbox for "Quad Level" tool
 

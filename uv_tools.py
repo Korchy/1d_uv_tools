@@ -11,7 +11,7 @@ from bmesh.types import BMVert
 from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty, StringProperty
 from bpy.types import Operator, Panel, Scene, WindowManager
 from bpy.utils import register_class, unregister_class
-from math import ceil, cos, degrees, floor, sin, pi
+from math import atan2, ceil, cos, degrees, floor, sin, pi
 from mathutils import Vector, Matrix
 from mathutils.geometry import barycentric_transform
 
@@ -19,7 +19,7 @@ bl_info = {
     "name": "1D UV Tools",
     "description": "Tools for working with UV Maps",
     "author": "Nikita Akimov, Paul Kotelevets",
-    "version": (1, 6, 0),
+    "version": (1, 7, 0),
     "blender": (2, 79, 0),
     "location": "View3D > Tool panel > 1D > UV Tools",
     "doc_url": "https://github.com/Korchy/1d_uv_tools",
@@ -481,6 +481,97 @@ class UVTools:
         if mode is not None:
             bpy.ops.object.mode_set(mode=mode)
 
+    @classmethod
+    def scan_transform(cls, context, max_value=99.0, select_only=False,
+                       check_translation=False, check_rotation=False, check_scale=False,
+                       check_threshold = 0.02):
+        # Check what faces was changed via ShureUV and moves them up proportionally by max_value
+        # current object
+        obj = context.active_object
+        # current mode
+        mode = obj.mode if obj.mode != 'OBJECT' else None
+        if mode is not None:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        # use bmesh object to split mesh by all edges
+        #   can't use bpy.ops.mesh.edge_split() because it requires EDIT mode for execution, and doesn't save selection
+        #   after execution and switching to OBJECT mode
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        # split
+        bmesh.ops.split_edges(bm, edges=bm.edges)
+        # save changed data to mesh
+        bm.to_mesh(context.active_object.data)
+        bm.free()
+        # src uv
+        src_uv_layer = cls._active_uv_layer(obj=obj)
+        # create temp copy of active uv
+        bpy.ops.mesh.uv_texture_add()
+        # copy uv
+        copy_uv_layer = cls._active_uv_layer(obj=obj)
+        copy_uv_texture = obj.data.uv_textures.active
+        # execute Multi Sure UV on copy uv_layer
+        bpy.ops.uvtools.multy_sureuv()
+        # get changes on faces between src_ and copy_ uv layers
+        # proces faces
+        faces = [_face for _face in obj.data.polygons if _face.select] if select_only else obj.data.polygons
+        changes = []    # [[face, rotation, translation, scale], ...]
+        for face in faces:
+            # check each face for transforms
+            # rotation - compare rotation of the first longest uv-vector on copy uv_layer with the same on src uv_layer
+            src_longest_edge, src_edge_idx, src_edge_length = cls._first_longest_uv_edge(
+                face=face,
+                uv_layer=src_uv_layer
+            )
+            src_longest_vec = src_longest_edge[1].uv - src_longest_edge[0].uv
+            copy_uv_edges = cls._uv_edges(face=face, uv_layer=copy_uv_layer)
+            copy_same_edge = copy_uv_edges[src_edge_idx]
+            copy_same_vec = copy_same_edge[1].uv - copy_same_edge[0].uv
+            # get rotation from src_vec to copy_vec in radians CCV
+            cross = src_longest_vec.x * copy_same_vec.y - src_longest_vec.y * copy_same_vec.x
+            dot = src_longest_vec.dot(copy_same_vec)
+            rotation = atan2(cross, dot) % (2 * pi)    # angle between src_ and copy_ vectors in radians
+            if abs(rotation) < check_threshold:
+                rotation = 0.0
+            # scale - compare lengths on this two vectors
+            scale = src_edge_length / copy_same_vec.length
+            if abs(scale - 1.0) < check_threshold:
+                scale = 0.0
+            # translation - compare positions of src_ and copy_ of the uv-face centroids
+            src_uv_co = [_point.uv for _point in cls._uv_points(faces_list=[face], uv_layer=src_uv_layer)]
+            src_centroid = cls._centroid(vertexes=src_uv_co)
+            copy_uv_co = [_point.uv for _point in cls._uv_points(faces_list=[face], uv_layer=copy_uv_layer)]
+            copy_centroid = cls._centroid(vertexes=copy_uv_co)
+            translation = (copy_centroid - src_centroid).length
+            if abs(translation) < check_threshold:
+                translation = 0.0
+            # append to changes
+            changes.append([face, rotation, translation, scale])
+        # apply changes to the faces
+        max_rotation = max(changes, key=lambda _item: _item[1])[1]
+        min_rotation = min(changes, key=lambda _item: _item[1])[1]
+        max_translation = max(changes, key=lambda _item: _item[2])[2]
+        min_translation = min(changes, key=lambda _item: _item[2])[2]
+        max_scale = max(changes, key=lambda _item: _item[3])[3]
+        min_scale = min(changes, key=lambda _item: _item[3])[3]
+        # for each change
+        for face, rotation, translation, scale in changes:
+            face_vertices = [obj.data.vertices[_idx] for _idx in face.vertices]
+            for vertex in face_vertices:
+                # rotation
+                if check_rotation and max_rotation > min_rotation:
+                    vertex.co.z += max_value * (rotation - min_rotation) / (max_rotation - min_rotation)
+                # translation
+                if check_translation and max_translation > min_translation:
+                    vertex.co.z += max_value * (translation - min_translation) / (max_translation - min_translation)
+                # scale
+                if check_scale and max_scale > min_scale:
+                    vertex.co.z += max_value * (scale - min_scale) / (max_scale - min_scale)
+        # remove temporary copy of the uv-map
+        obj.data.uv_textures.remove(copy_uv_texture)
+        # return mode back
+        if mode is not None:
+            bpy.ops.object.mode_set(mode=mode)
+
 
     # EXPERIMENTAL
 
@@ -924,6 +1015,14 @@ class UVTools:
         else:
             return [uv_layer.data[loop_index] for _face in faces_list for loop_index in _face.loop_indices]
 
+    @classmethod
+    def _uv_edges(cls, face, uv_layer, bm=None):
+        # get list of UV edges from uv_points
+        uv_points = cls._uv_points(faces_list=[face], uv_layer=uv_layer, bm=bm)
+        uv_points.append(uv_points[0])  # last point -> first point edge
+        # [[uv_point, uv_point], ...]
+        return list(cls._chunks(lst=uv_points, n=2, offset=1))[:-1]
+
     @staticmethod
     def active_edge(context, obj):
         # get active edge on the mesh
@@ -1006,11 +1105,8 @@ class UVTools:
     @classmethod
     def _longest_uv_edge(cls, bm_face, uv_layer, bm=None, offset=0):
         # get longest edge on the uv face (uv loop) of the bmesh face
-        # [uv_point, uv_point, ...]
-        uv_points = cls._uv_points(faces_list=[bm_face], uv_layer=uv_layer, bm=bm)
-        uv_points.append(uv_points[0])  # last point -> first point edge
         # [[uv_point, uv_point], ...]
-        uv_edges = list(cls._chunks(lst=uv_points, n=2, offset=1))[:-1]
+        uv_edges = cls._uv_edges(face=bm_face, uv_layer=uv_layer, bm=bm)
         # sort by edges length
         uv_edges_sorted = sorted(
             uv_edges,
@@ -1018,7 +1114,25 @@ class UVTools:
             reverse=True
         )
         # return uv points of the longest uv edge
-        return uv_edges_sorted[0 + offset]
+        return uv_edges_sorted[0 + offset]  # [uv_point, uv_point]
+
+    @classmethod
+    def _first_longest_uv_edge(cls, face, uv_layer, bm=None, offset=0):
+        # get first longest uv-edge on the uv-face (uv loop) of the face
+        # [[uv_point, uv_point], ...]
+        uv_edges = cls._uv_edges(face=face, uv_layer=uv_layer, bm=bm)
+        # sort by edges length
+        longest_edge = uv_edges[0]
+        edge_length = (longest_edge[1].uv - longest_edge[0].uv).length
+        edge_idx = 0
+        for _i, edge in enumerate(uv_edges[1:]):
+            _edge_length = (edge[1].uv - edge[0].uv).length
+            if _edge_length > edge_length:
+                longest_edge = edge
+                edge_length = _edge_length
+                edge_idx = _i + 1
+        # return uv points of the longest uv edge
+        return longest_edge, edge_idx, edge_length
 
 
     @staticmethod
@@ -1037,6 +1151,37 @@ class UVTools:
             row.prop(
                 data=context.window_manager,
                 property='uv_tools_1d_prop_retexel_rotate_threshold'
+            )
+            # Scan UV Transform
+            box = layout.box()
+            op = box.operator(
+                operator='uvtools.scan_transform',
+                icon='MOD_UVPROJECT'
+            )
+            op.max_value = context.window_manager.uv_tools_1d_prop_scan_transform_max_value
+            op.select_only = context.window_manager.uv_tools_1d_prop_scan_transform_select_only
+            op.check_translation = context.window_manager.uv_tools_1d_prop_scan_transform_translation
+            op.check_rotation = context.window_manager.uv_tools_1d_prop_scan_transform_rotation
+            op.check_scale = context.window_manager.uv_tools_1d_prop_scan_transform_scale
+            box.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_scan_transform_max_value'
+            )
+            box.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_scan_transform_select_only'
+            )
+            box.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_scan_transform_translation'
+            )
+            box.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_scan_transform_rotation'
+            )
+            box.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_scan_transform_scale'
             )
             # Multy Sure UV
             box = layout.box().column()
@@ -1143,7 +1288,10 @@ class UVTools:
                 data=context.window_manager,
                 property='uv_tools_1d_prop_quad_level_pin'
             )
+
+
             # ToDo: EXPERIMENTAL
+
             layout.separator()
             box = layout.box()
             box.label(text='Experimental')
@@ -1540,6 +1688,48 @@ class UVTools_OT_quad_level(Operator):
         )
         return {'FINISHED'}
 
+class UVTools_OT_scan_transform(Operator):
+    bl_idname = 'uvtools.scan_transform'
+    bl_label = 'Scan UV Transform'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    max_value = FloatProperty(
+        # Max value for moving faces
+        name='Max Dist',
+        default=99.0
+    )
+    select_only = BoolProperty(
+        # Process only selected faces
+        name='Select Only',
+        default=False
+    )
+    check_translation = BoolProperty(
+        # Check translation
+        name='Location',
+        default=False
+    )
+    check_rotation = BoolProperty(
+        # Check rotation
+        name='Rotation',
+        default=False
+    )
+    check_scale = BoolProperty(
+        # Check scale
+        name='Scale',
+        default=False
+    )
+
+    def execute(self, context):
+        UVTools.scan_transform(
+            context=context,
+            max_value=self.max_value,
+            select_only=self.select_only,
+            check_translation=self.check_translation,
+            check_rotation=self.check_rotation,
+            check_scale=self.check_scale
+        )
+        return {'FINISHED'}
+
 
 # PANELS
 
@@ -1629,6 +1819,31 @@ def register(ui=True):
         name='Pin Level',
         default=False
     )
+    WindowManager.uv_tools_1d_prop_scan_transform_max_value = FloatProperty(
+        # Max value for moving faces
+        name='Max Dist',
+        default=99.0
+    )
+    WindowManager.uv_tools_1d_prop_scan_transform_select_only = BoolProperty(
+        # Process only selected faces
+        name='Select Only',
+        default=False
+    )
+    WindowManager.uv_tools_1d_prop_scan_transform_translation = BoolProperty(
+        # Check translation
+        name='Location',
+        default=False
+    )
+    WindowManager.uv_tools_1d_prop_scan_transform_rotation = BoolProperty(
+        # Check rotation
+        name='Rotation',
+        default=False
+    )
+    WindowManager.uv_tools_1d_prop_scan_transform_scale = BoolProperty(
+        # Check scale
+        name='Scale',
+        default=False
+    )
     register_class(UVTools_OT_uvpack)
     register_class(UVTools_OT_fit_to_tile)
     register_class(UVTools_OT_texel_scale)
@@ -1638,6 +1853,7 @@ def register(ui=True):
     register_class(UVTools_PaObjMultySureUV)
     register_class(UVTools_SureUVWOperator)
     register_class(UVTools_OT_quad_level)
+    register_class(UVTools_OT_scan_transform)
     if ui:
         register_class(UVTools_PT_panel)
         register_class(UVTools_PT_panel_Viewport)
@@ -1648,6 +1864,7 @@ def unregister(ui=True):
         unregister_class(UVTools_PT_panel_Viewport)
         unregister_class(UVTools_PT_panel)
     # butch clean
+    unregister_class(UVTools_OT_scan_transform)
     unregister_class(UVTools_OT_quad_level)
     unregister_class(UVTools_SureUVWOperator)
     unregister_class(UVTools_PaObjMultySureUV)
@@ -1657,6 +1874,11 @@ def unregister(ui=True):
     unregister_class(UVTools_OT_texel_scale)
     unregister_class(UVTools_OT_fit_to_tile)
     unregister_class(UVTools_OT_uvpack)
+    del WindowManager.uv_tools_1d_prop_scan_transform_scale
+    del WindowManager.uv_tools_1d_prop_scan_transform_rotation
+    del WindowManager.uv_tools_1d_prop_scan_transform_translation
+    del WindowManager.uv_tools_1d_prop_scan_transform_select_only
+    del WindowManager.uv_tools_1d_prop_scan_transform_max_value
     del WindowManager.uv_tools_1d_prop_quad_level_pin
     del WindowManager.uv_tools_1d_prop_disp_omsureuv
     del WindowManager.uv_tools_1d_prop_omsureuv_all_scale_def
