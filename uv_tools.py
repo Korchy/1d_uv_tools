@@ -530,7 +530,8 @@ class UVTools:
             cross = src_longest_vec.x * copy_same_vec.y - src_longest_vec.y * copy_same_vec.x
             dot = src_longest_vec.dot(copy_same_vec)
             rotation = atan2(cross, dot) % (2 * pi)    # angle between src_ and copy_ vectors in radians
-            if abs(rotation) < check_threshold:
+            # if abs(rotation) < check_threshold:
+            if abs(rotation) < 0.06:    # Paul, threshold for rotation 0.06
                 rotation = 0.0
             # scale - compare lengths on this two vectors
             scale = src_edge_length / copy_same_vec.length
