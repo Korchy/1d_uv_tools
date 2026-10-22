@@ -33,7 +33,7 @@ Splits active mesh on faces. Calls "Multi Sure UV". Compare UV maps before and a
 
 Current version
 -
-1.7.0.
+1.7.3.
 
 Blender version
 -
@@ -41,6 +41,16 @@ Blender version
 
 Version history
 -
+1.7.3
+- Added "Select Only" mode for Scan Transform tool. It only selects faces with transformed uv-faces, don't move them.
+
+1.7.2
+- Added "Threshold" parameter for Scan Transform tool
+- Stay selected only processed faces with found uv transforms
+
+1.7.1
+- Fixed problem with rotation on small angles for Scan Transform Tool
+
 1.7.0
 - Added "Scan Transform" tool
 

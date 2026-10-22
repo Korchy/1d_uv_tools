@@ -19,7 +19,7 @@ bl_info = {
     "name": "1D UV Tools",
     "description": "Tools for working with UV Maps",
     "author": "Nikita Akimov, Paul Kotelevets",
-    "version": (1, 7, 0),
+    "version": (1, 7, 3),
     "blender": (2, 79, 0),
     "location": "View3D > Tool panel > 1D > UV Tools",
     "doc_url": "https://github.com/Korchy/1d_uv_tools",
@@ -482,10 +482,13 @@ class UVTools:
             bpy.ops.object.mode_set(mode=mode)
 
     @classmethod
-    def scan_transform(cls, context, max_value=99.0, select_only=False,
+    def scan_transform(cls, context, max_value=99.0,
+                       select_only=False, process_only_selection=False,
                        check_translation=False, check_rotation=False, check_scale=False,
                        check_threshold = 0.02):
-        # Check what faces was changed via ShureUV and moves them up proportionally by max_value
+        # Check what faces was changed via Multi Shure UV and moves them up proportionally by max_value
+        #   select_only - only select faces, don't move
+        #   only_selection - process only selected faces
         # current object
         obj = context.active_object
         # current mode
@@ -500,75 +503,98 @@ class UVTools:
         # split
         bmesh.ops.split_edges(bm, edges=bm.edges)
         # save changed data to mesh
-        bm.to_mesh(context.active_object.data)
+        bm.to_mesh(obj.data)
         bm.free()
-        # src uv
-        src_uv_layer = cls._active_uv_layer(obj=obj)
+        # src uv name
+        src_uv_layer_name = cls._active_uv_layer(obj=obj).name
         # create temp copy of active uv
         bpy.ops.mesh.uv_texture_add()
         # copy uv
-        copy_uv_layer = cls._active_uv_layer(obj=obj)
-        copy_uv_texture = obj.data.uv_textures.active
+        copy_uv_layer_name = cls._active_uv_layer(obj=obj).name
         # execute Multi Sure UV on copy uv_layer
         bpy.ops.uvtools.multy_sureuv()
+        # use bmesh for proper selection
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        src_uv_layer = bm.loops.layers.uv[src_uv_layer_name]
+        copy_uv_layer = bm.loops.layers.uv[copy_uv_layer_name]
         # get changes on faces between src_ and copy_ uv layers
         # proces faces
-        faces = [_face for _face in obj.data.polygons if _face.select] if select_only else obj.data.polygons
+        faces = [_face for _face in bm.faces if _face.select] if process_only_selection else bm.faces
         changes = []    # [[face, rotation, translation, scale], ...]
         for face in faces:
             # check each face for transforms
             # rotation - compare rotation of the first longest uv-vector on copy uv_layer with the same on src uv_layer
             src_longest_edge, src_edge_idx, src_edge_length = cls._first_longest_uv_edge(
                 face=face,
-                uv_layer=src_uv_layer
+                uv_layer=src_uv_layer,
+                bm=bm
             )
             src_longest_vec = src_longest_edge[1].uv - src_longest_edge[0].uv
-            copy_uv_edges = cls._uv_edges(face=face, uv_layer=copy_uv_layer)
+            copy_uv_edges = cls._uv_edges(face=face, uv_layer=copy_uv_layer, bm=bm)
             copy_same_edge = copy_uv_edges[src_edge_idx]
             copy_same_vec = copy_same_edge[1].uv - copy_same_edge[0].uv
             # get rotation from src_vec to copy_vec in radians CCV
             cross = src_longest_vec.x * copy_same_vec.y - src_longest_vec.y * copy_same_vec.x
             dot = src_longest_vec.dot(copy_same_vec)
-            rotation = atan2(cross, dot) % (2 * pi)    # angle between src_ and copy_ vectors in radians
-            # if abs(rotation) < check_threshold:
-            if abs(rotation) < 0.06:    # Paul, threshold for rotation 0.06
+            rotation = atan2(cross, dot)    # angle between src_ and copy_ vectors in radians
+            if abs(rotation) < check_threshold:
                 rotation = 0.0
+            rotation %= (2 * pi)    # set rotation angle to diapason 0 - 2pi (0 - 360 deg)
             # scale - compare lengths on this two vectors
             scale = src_edge_length / copy_same_vec.length
             if abs(scale - 1.0) < check_threshold:
                 scale = 0.0
             # translation - compare positions of src_ and copy_ of the uv-face centroids
-            src_uv_co = [_point.uv for _point in cls._uv_points(faces_list=[face], uv_layer=src_uv_layer)]
+            src_uv_co = [_point.uv for _point in cls._uv_points(faces_list=[face], uv_layer=src_uv_layer, bm=bm)]
             src_centroid = cls._centroid(vertexes=src_uv_co)
-            copy_uv_co = [_point.uv for _point in cls._uv_points(faces_list=[face], uv_layer=copy_uv_layer)]
+            copy_uv_co = [_point.uv for _point in cls._uv_points(faces_list=[face], uv_layer=copy_uv_layer, bm=bm)]
             copy_centroid = cls._centroid(vertexes=copy_uv_co)
             translation = (copy_centroid - src_centroid).length
             if abs(translation) < check_threshold:
                 translation = 0.0
             # append to changes
-            changes.append([face, rotation, translation, scale])
+            if rotation != 0.0 or translation != 0.0 or scale != 0.0:
+                changes.append([face, rotation, translation, scale])
         # apply changes to the faces
-        max_rotation = max(changes, key=lambda _item: _item[1])[1]
-        min_rotation = min(changes, key=lambda _item: _item[1])[1]
-        max_translation = max(changes, key=lambda _item: _item[2])[2]
-        min_translation = min(changes, key=lambda _item: _item[2])[2]
-        max_scale = max(changes, key=lambda _item: _item[3])[3]
-        min_scale = min(changes, key=lambda _item: _item[3])[3]
-        # for each change
-        for face, rotation, translation, scale in changes:
-            face_vertices = [obj.data.vertices[_idx] for _idx in face.vertices]
-            for vertex in face_vertices:
-                # rotation
-                if check_rotation and max_rotation > min_rotation:
-                    vertex.co.z += max_value * (rotation - min_rotation) / (max_rotation - min_rotation)
-                # translation
-                if check_translation and max_translation > min_translation:
-                    vertex.co.z += max_value * (translation - min_translation) / (max_translation - min_translation)
-                # scale
-                if check_scale and max_scale > min_scale:
-                    vertex.co.z += max_value * (scale - min_scale) / (max_scale - min_scale)
+        if changes:
+            if select_only:
+                cls._deselect_all_bm(bm=bm)
+            max_rotation = max(changes, key=lambda _item: _item[1])[1]
+            min_rotation = min(changes, key=lambda _item: _item[1])[1]
+            max_translation = max(changes, key=lambda _item: _item[2])[2]
+            min_translation = min(changes, key=lambda _item: _item[2])[2]
+            max_scale = max(changes, key=lambda _item: _item[3])[3]
+            min_scale = min(changes, key=lambda _item: _item[3])[3]
+            # for each change
+            for face, rotation, translation, scale in changes:
+                for vertex in face.verts:
+                    # rotation
+                    if check_rotation and rotation and max_rotation > min_rotation:
+                       if select_only:
+                            vertex.select = True
+                            face.select = True
+                       else:
+                            vertex.co.z += max_value * (rotation - min_rotation) / (max_rotation - min_rotation)
+                    # translation
+                    if check_translation and translation and max_translation > min_translation:
+                        if select_only:
+                            vertex.select = True
+                            face.select = True
+                        else:
+                            vertex.co.z += max_value * (translation - min_translation) / (max_translation - min_translation)
+                    # scale
+                    if check_scale and scale and max_scale > min_scale:
+                        if select_only:
+                            vertex.select = True
+                            face.select = True
+                        else:
+                            vertex.co.z += max_value * (scale - min_scale) / (max_scale - min_scale)
+        # save changed data to mesh
+        bm.to_mesh(obj.data)
+        bm.free()
         # remove temporary copy of the uv-map
-        obj.data.uv_textures.remove(copy_uv_texture)
+        obj.data.uv_textures.remove(obj.data.uv_textures[copy_uv_layer_name])
         # return mode back
         if mode is not None:
             bpy.ops.object.mode_set(mode=mode)
@@ -1135,6 +1161,15 @@ class UVTools:
         # return uv points of the longest uv edge
         return longest_edge, edge_idx, edge_length
 
+    @staticmethod
+    def _deselect_all_bm(bm):
+        # remove all selection in bmesh
+        for face in bm.faces:
+            face.select = False
+        for edge in bm.edges:
+            edge.select = False
+        for vertex in bm.verts:
+            vertex.select = False
 
     @staticmethod
     def ui(layout, context, area):
@@ -1161,9 +1196,11 @@ class UVTools:
             )
             op.max_value = context.window_manager.uv_tools_1d_prop_scan_transform_max_value
             op.select_only = context.window_manager.uv_tools_1d_prop_scan_transform_select_only
+            op.only_selection = context.window_manager.uv_tools_1d_prop_scan_transform_only_selection
             op.check_translation = context.window_manager.uv_tools_1d_prop_scan_transform_translation
             op.check_rotation = context.window_manager.uv_tools_1d_prop_scan_transform_rotation
             op.check_scale = context.window_manager.uv_tools_1d_prop_scan_transform_scale
+            op.threshold = context.window_manager.uv_tools_1d_prop_scan_transform_threshold
             box.prop(
                 data=context.window_manager,
                 property='uv_tools_1d_prop_scan_transform_max_value'
@@ -1171,6 +1208,14 @@ class UVTools:
             box.prop(
                 data=context.window_manager,
                 property='uv_tools_1d_prop_scan_transform_select_only'
+            )
+            box.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_scan_transform_only_selection'
+            )
+            box.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_scan_transform_threshold'
             )
             box.prop(
                 data=context.window_manager,
@@ -1700,9 +1745,20 @@ class UVTools_OT_scan_transform(Operator):
         default=99.0
     )
     select_only = BoolProperty(
-        # Process only selected faces
+        # Only select, don't move
         name='Select Only',
         default=False
+    )
+    only_selection = BoolProperty(
+        # Process only selected faces
+        name='Only Selection',
+        default=False
+    )
+    threshold = FloatProperty(
+        # Threshold
+        name='Threshold',
+        default=0.06,
+        min=0.0
     )
     check_translation = BoolProperty(
         # Check translation
@@ -1725,9 +1781,11 @@ class UVTools_OT_scan_transform(Operator):
             context=context,
             max_value=self.max_value,
             select_only=self.select_only,
+            process_only_selection=self.only_selection,
             check_translation=self.check_translation,
             check_rotation=self.check_rotation,
-            check_scale=self.check_scale
+            check_scale=self.check_scale,
+            check_threshold=self.threshold
         )
         return {'FINISHED'}
 
@@ -1826,9 +1884,20 @@ def register(ui=True):
         default=99.0
     )
     WindowManager.uv_tools_1d_prop_scan_transform_select_only = BoolProperty(
-        # Process only selected faces
+        # Only select faces, don't move
         name='Select Only',
         default=False
+    )
+    WindowManager.uv_tools_1d_prop_scan_transform_only_selection = BoolProperty(
+        # Process only selected faces
+        name='Check Only Selection',
+        default=False
+    )
+    WindowManager.uv_tools_1d_prop_scan_transform_threshold = FloatProperty(
+        # Threshold
+        name='Threshold',
+        default=0.06,
+        min=0.0
     )
     WindowManager.uv_tools_1d_prop_scan_transform_translation = BoolProperty(
         # Check translation
@@ -1878,7 +1947,9 @@ def unregister(ui=True):
     del WindowManager.uv_tools_1d_prop_scan_transform_scale
     del WindowManager.uv_tools_1d_prop_scan_transform_rotation
     del WindowManager.uv_tools_1d_prop_scan_transform_translation
+    del WindowManager.uv_tools_1d_prop_scan_transform_threshold
     del WindowManager.uv_tools_1d_prop_scan_transform_select_only
+    del WindowManager.uv_tools_1d_prop_scan_transform_only_selection
     del WindowManager.uv_tools_1d_prop_scan_transform_max_value
     del WindowManager.uv_tools_1d_prop_quad_level_pin
     del WindowManager.uv_tools_1d_prop_disp_omsureuv
