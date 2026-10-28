@@ -13,6 +13,14 @@ Pack current existed UV Map to tile from 0 to 1. Used faces centroids for packin
 
 With enabled "Pack to Cursor" option - pack along the cursor.
 
+**UV Pack to Custome Tile**
+
+Same principle as in the "Pack Tile".
+
+"Store Custom Tile" button saves max height and width of the selected uv-points area.
+
+"Pack to Custom Tile" packs to stored custom area.
+
 **Store Key - Fit to Tile**
 
 - select 3 points on the uv.
@@ -33,7 +41,7 @@ Splits active mesh on faces. Calls "Multi Sure UV". Compare UV maps before and a
 
 Current version
 -
-1.7.3.
+1.8.0.
 
 Blender version
 -
@@ -41,6 +49,9 @@ Blender version
 
 Version history
 -
+1.8.0
+- Added "Pack to Custom Tile" tool
+
 1.7.3
 - Added "Select Only" mode for Scan Transform tool. It only selects faces with transformed uv-faces, don't move them.
 

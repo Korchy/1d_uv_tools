@@ -19,7 +19,7 @@ bl_info = {
     "name": "1D UV Tools",
     "description": "Tools for working with UV Maps",
     "author": "Nikita Akimov, Paul Kotelevets",
-    "version": (1, 7, 3),
+    "version": (1, 8, 0),
     "blender": (2, 79, 0),
     "location": "View3D > Tool panel > 1D > UV Tools",
     "doc_url": "https://github.com/Korchy/1d_uv_tools",
@@ -599,6 +599,101 @@ class UVTools:
         if mode is not None:
             bpy.ops.object.mode_set(mode=mode)
 
+    @classmethod
+    def store_custom_tile(cls, context, op):
+        # get and store custom area for future packing with "Pack to Custom Tile"
+        # current object
+        obj = context.active_object
+        # current mode
+        mode = obj.mode if obj.mode != 'OBJECT' else None
+        if mode is not None:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        # uv layer
+        uv_layer = cls._active_uv_layer(obj)
+        # get selected uv-points
+        selected_uv_points = [_uv_point for _uv_point in \
+                              cls._uv_points(faces_list=obj.data.polygons,uv_layer=uv_layer) \
+                              if _uv_point.select]
+        # bbox = {'max_y': -5.6, 'max_x': -11.14, 'min_x': -12.94, 'min_y': -7.16}
+        bbox = cls._bbox_uv(uv_points=selected_uv_points)
+        # save bbox to scene variables
+        context.window_manager.uv_tools_1d_prop_pack_to_c_tile_rt = (bbox['max_x'], bbox['max_y'])
+        context.window_manager.uv_tools_1d_prop_pack_to_c_tile_lb = (bbox['min_x'], bbox['min_y'])
+        # print to INFO
+        op.report(
+            type={'INFO'},
+            message='Custom Tile:' \
+                    + ' x=' + str(abs(bbox['max_x'] - bbox['min_x'])) \
+                    + ' y=' + str(abs(bbox['max_y'] - bbox['min_y'])) \
+                    + ' [(' + str(bbox['min_x']) + ', ' + str(bbox['min_y']) + '), (' + str(bbox['max_x']) + ', ' + str(bbox['max_y']) + ')]'
+        )
+        # return mode back
+        if mode is not None:
+            bpy.ops.object.mode_set(mode=mode)
+
+    @classmethod
+    def pack_to_custom_tile(cls, context):
+        # Pack to Custom Tile
+        # all selected uv_points mast be transformed by stored tile to (0,0, 1,1) tile
+        #   them use uv_pack_tile
+        #   and then transform back
+        # current object
+        obj = context.active_object
+        # current mode
+        mode = obj.mode if obj.mode != 'OBJECT' else None
+        if mode is not None:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        # make first transform for all selected uv-points to ((0, 0),  (1, 1)) tile
+        # use bmesh
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        # src triangle - get form stored tile
+        src_triangle_co = [
+            Vector(context.window_manager.uv_tools_1d_prop_pack_to_c_tile_lb).to_3d(),
+            Vector((context.window_manager.uv_tools_1d_prop_pack_to_c_tile_rt[0], context.window_manager.uv_tools_1d_prop_pack_to_c_tile_lb[1], 0.0)),
+            Vector(context.window_manager.uv_tools_1d_prop_pack_to_c_tile_rt).to_3d(),
+        ]
+        # dest triangle - get form ((0, 0),  (1, 1)) tile
+        dest_triangle_co = [
+            Vector((0.0, 0.0, 0.0)),
+            Vector((1.0, 0.0, 0.0)),
+            Vector((1.0, 1.0, 0.0))
+        ]
+        # active uv_layer
+        uv_layer = cls._active_uv_layer(bm)
+        # for all selected uv-points
+        selected_uv_points = cls._uv_points(faces_list=bm.faces, uv_layer=uv_layer, bm=bm)
+        # make transform from src_ to dest_
+        for uv_point in selected_uv_points:
+            wco = uv_point.uv.to_3d()
+            wco = barycentric_transform(wco, *src_triangle_co, *dest_triangle_co)
+            uv_point.uv = wco.to_2d()
+        # save changed data to mesh
+        bm.to_mesh(obj.data)
+        bm.free()
+        # pack using uv_pack_tile
+        cls.uv_pack_tile(
+            context=context,
+            pack_to_cursor=False
+        )
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        # active uv_layer
+        uv_layer = cls._active_uv_layer(bm)
+        # for all selected uv-points
+        selected_uv_points = cls._uv_points(faces_list=bm.faces, uv_layer=uv_layer, bm=bm)
+        # make back transform
+        for uv_point in selected_uv_points:
+            wco = uv_point.uv.to_3d()
+            wco = barycentric_transform(wco, *dest_triangle_co, *src_triangle_co)
+            uv_point.uv = wco.to_2d()
+        # save changed data to mesh
+        bm.to_mesh(obj.data)
+        bm.free()
+        # return mode back
+        if mode is not None:
+            bpy.ops.object.mode_set(mode=mode)
+
 
     # EXPERIMENTAL
 
@@ -1172,6 +1267,16 @@ class UVTools:
             vertex.select = False
 
     @staticmethod
+    def _bbox_uv(uv_points):
+        x, y = zip(*(_p.uv for _p in uv_points))
+        return {
+            'min_x': min(x),
+            'min_y': min(y),
+            'max_x': max(x),
+            'max_y': max(y),
+        }
+
+    @staticmethod
     def ui(layout, context, area):
         # ui panels
         if area == 'VIEWPORT':
@@ -1308,6 +1413,15 @@ class UVTools:
                 property='uv_tools_1d_prop_pack_to_cursor'
             )
             op.pack_to_cursor = context.scene.uv_tools_1d_prop_pack_to_cursor
+            # Pack to Custom Tile
+            box.operator(
+                operator='uvtools.store_custom_tile',
+                icon='MOD_LATTICE'
+            )
+            box.operator(
+                operator='uvtools.pack_to_custom_tile',
+                icon='MOD_BEVEL'
+            )
             # Fit to Tile
             box = layout.box()
             box.operator(
@@ -1789,6 +1903,29 @@ class UVTools_OT_scan_transform(Operator):
         )
         return {'FINISHED'}
 
+class UVTools_OT_store_custom_tile(Operator):
+    bl_idname = 'uvtools.store_custom_tile'
+    bl_label = 'Store Custom Tile'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        UVTools.store_custom_tile(
+            context=context,
+            op=self
+        )
+        return {'FINISHED'}
+
+class UVTools_OT_pack_to_custom_tile(Operator):
+    bl_idname = 'uvtools.pack_to_custom_tile'
+    bl_label = 'Pack to Custom Tile'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        UVTools.pack_to_custom_tile(
+            context=context
+        )
+        return {'FINISHED'}
+
 
 # PANELS
 
@@ -1914,6 +2051,16 @@ def register(ui=True):
         name='Scale',
         default=False
     )
+    WindowManager.uv_tools_1d_prop_pack_to_c_tile_lb = FloatVectorProperty(
+        name='Left-bottom angle of packed area',
+        default=(0.0, 0.0),
+        size=2
+    )
+    WindowManager.uv_tools_1d_prop_pack_to_c_tile_rt = FloatVectorProperty(
+        name='Right-top angle of packed area',
+        default=(0.0, 0.0),
+        size=2
+    )
     register_class(UVTools_OT_uvpack)
     register_class(UVTools_OT_fit_to_tile)
     register_class(UVTools_OT_texel_scale)
@@ -1924,6 +2071,8 @@ def register(ui=True):
     register_class(UVTools_SureUVWOperator)
     register_class(UVTools_OT_quad_level)
     register_class(UVTools_OT_scan_transform)
+    register_class(UVTools_OT_store_custom_tile)
+    register_class(UVTools_OT_pack_to_custom_tile)
     if ui:
         register_class(UVTools_PT_panel)
         register_class(UVTools_PT_panel_Viewport)
@@ -1934,6 +2083,8 @@ def unregister(ui=True):
         unregister_class(UVTools_PT_panel_Viewport)
         unregister_class(UVTools_PT_panel)
     # butch clean
+    unregister_class(UVTools_OT_pack_to_custom_tile)
+    unregister_class(UVTools_OT_store_custom_tile)
     unregister_class(UVTools_OT_scan_transform)
     unregister_class(UVTools_OT_quad_level)
     unregister_class(UVTools_SureUVWOperator)
@@ -1944,6 +2095,8 @@ def unregister(ui=True):
     unregister_class(UVTools_OT_texel_scale)
     unregister_class(UVTools_OT_fit_to_tile)
     unregister_class(UVTools_OT_uvpack)
+    del WindowManager.uv_tools_1d_prop_pack_to_c_tile_rt
+    del WindowManager.uv_tools_1d_prop_pack_to_c_tile_lb
     del WindowManager.uv_tools_1d_prop_scan_transform_scale
     del WindowManager.uv_tools_1d_prop_scan_transform_rotation
     del WindowManager.uv_tools_1d_prop_scan_transform_translation
