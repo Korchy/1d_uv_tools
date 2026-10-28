@@ -1918,6 +1918,7 @@ class UVTools_OT_store_custom_tile(Operator):
 class UVTools_OT_pack_to_custom_tile(Operator):
     bl_idname = 'uvtools.pack_to_custom_tile'
     bl_label = 'Pack to Custom Tile'
+    bl_description = 'Barycentric packing'
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
