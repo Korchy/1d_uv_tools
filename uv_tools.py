@@ -608,11 +608,15 @@ class UVTools:
         mode = obj.mode if obj.mode != 'OBJECT' else None
         if mode is not None:
             bpy.ops.object.mode_set(mode='OBJECT')
+        # use bmesh
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
         # uv layer
-        uv_layer = cls._active_uv_layer(obj)
+        uv_layer = cls._active_uv_layer(bm)
         # get selected uv-points
+        selected_faces = [_face for _face in bm.faces if _face.select]
         selected_uv_points = [_uv_point for _uv_point in \
-                              cls._uv_points(faces_list=obj.data.polygons,uv_layer=uv_layer) \
+                              cls._uv_points(faces_list=selected_faces,uv_layer=uv_layer, bm=bm) \
                               if _uv_point.select]
         # bbox = {'max_y': -5.6, 'max_x': -11.14, 'min_x': -12.94, 'min_y': -7.16}
         bbox = cls._bbox_uv(uv_points=selected_uv_points)
@@ -1268,13 +1272,22 @@ class UVTools:
 
     @staticmethod
     def _bbox_uv(uv_points):
-        x, y = zip(*(_p.uv for _p in uv_points))
-        return {
-            'min_x': min(x),
-            'min_y': min(y),
-            'max_x': max(x),
-            'max_y': max(y),
-        }
+        if uv_points:
+            x, y = zip(*(_p.uv for _p in uv_points))
+            return {
+                'min_x': min(x),
+                'min_y': min(y),
+                'max_x': max(x),
+                'max_y': max(y),
+            }
+        else:
+            # if no points to get bbox - return (0,0 - 1,1) initial tile bbox
+            return {
+                'min_x': 0.0,
+                'min_y': 0.0,
+                'max_x': 1.0,
+                'max_y': 1.0
+            }
 
     @staticmethod
     def ui(layout, context, area):
