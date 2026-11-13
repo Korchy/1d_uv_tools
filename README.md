@@ -39,9 +39,14 @@ Rotates faces on the UV-Map to make it's longest edge horizontal for selected fa
 
 Splits active mesh on faces. Calls "Multi Sure UV". Compare UV maps before and after execution "Multi Sure UV". Moves faces up in 0 - Max Dist interval depends on the value of the difference Location/Rotation/Scale of the uv-faces before Shure UV and after it.
 
+**Flipped UV Faces**
+
+Finds faces with flipped UV-s. If check box "Include Null Area" is checked also select faces on mesh which have their uv-faces with null area.
+
+
 Current version
 -
-1.8.0.
+1.9.0.
 
 Blender version
 -
@@ -49,6 +54,9 @@ Blender version
 
 Version history
 -
+1.9.0
+- Added "Flipped UV Faces" tool
+
 1.8.0
 - Added "Pack to Custom Tile" tool
 

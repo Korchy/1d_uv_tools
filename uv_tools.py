@@ -19,7 +19,7 @@ bl_info = {
     "name": "1D UV Tools",
     "description": "Tools for working with UV Maps",
     "author": "Nikita Akimov, Paul Kotelevets",
-    "version": (1, 8, 0),
+    "version": (1, 9, 0),
     "blender": (2, 79, 0),
     "location": "View3D > Tool panel > 1D > UV Tools",
     "doc_url": "https://github.com/Korchy/1d_uv_tools",
@@ -698,6 +698,113 @@ class UVTools:
         if mode is not None:
             bpy.ops.object.mode_set(mode=mode)
 
+    @classmethod
+    def flipped_uv_faces(cls, context, op, include_null_area=True):
+        # find all faces on mesh with flipped uv-s
+        # current object
+        obj = context.active_object
+        if obj.mode == 'OBJECT':
+            # OBJECT MODE: for all selected objects just detect and select which have flipped uv faces
+            for _obj in context.selected_objects:
+                detected = False
+                bm = bmesh.new()
+                bm.from_mesh(_obj.data)
+                uv_layer = cls._active_uv_layer(obj=bm)
+                if uv_layer:
+                    # unhide all
+                    cls._unhide_all_bm(bm=bm)
+                    # deselect all
+                    cls._deselect_all_bm(bm=bm)
+                    # check each faces
+                    for face in bm.faces:
+                        # get face edges [[uv_point, uv_point], ...]
+                        face_uv_edges = cls._uv_edges(face=face, uv_layer=uv_layer, bm=bm)
+                        # uv edge vectors
+                        uv_edge_vectors = [_edge[1].uv - _edge[0].uv for _edge in face_uv_edges]
+                        # get pairs ov vector to check normal for each pair
+                        uv_edge_vectors.append(uv_edge_vectors[0])
+                        chunks = list(cls._chunks(lst=uv_edge_vectors, n=2, offset=1))[:-1]
+                        # for each pair of vectors
+                        summ_normal_sign = 0.0
+                        for chunk in chunks:
+                            normal_sign = (chunk[0].x * chunk[1].y) - (chunk[1].x * chunk[0].y)
+                            summ_normal_sign += normal_sign
+                        # check if summary normal sign is less than 0.0 -> flipped uv face detected
+                        if summ_normal_sign < 0:
+                            # found flipped uv face
+                            detected = True
+                            face.select = True
+                        if include_null_area and summ_normal_sign == 0:
+                            # found uv-face with null area
+                            detected = True
+                            face.select = True
+                # save changed data to mesh
+                bm.to_mesh(_obj.data)
+                bm.free()
+                # if detected - stay object selected, else - deselect
+                if not detected:
+                    _obj.select = False
+        else:
+            # EDIT MODE: for the current active object select all flipped uv faces
+            bpy.ops.object.mode_set(mode='OBJECT')
+            # use bmesh
+            bm = bmesh.new()
+            bm.from_mesh(obj.data)
+            uv_layer = cls._active_uv_layer(obj=bm)
+            if uv_layer:
+                # deselect all
+                cls._deselect_all_bm(bm=bm)
+                # check each faces
+                detected = False
+                detected_in_hidden = False
+                for face in bm.faces:
+                    # get face edges [[uv_point, uv_point], ...]
+                    face_uv_edges = cls._uv_edges(face=face, uv_layer=uv_layer, bm=bm)
+                    # uv edge vectors
+                    uv_edge_vectors = [_edge[1].uv - _edge[0].uv for _edge in face_uv_edges]
+                    # get pairs ov vector to check normal for each pair
+                    uv_edge_vectors.append(uv_edge_vectors[0])
+                    chunks = list(cls._chunks(lst=uv_edge_vectors, n=2, offset=1))[:-1]
+                    # for each pair of vectors
+                    summ_normal_sign = 0.0
+                    for chunk in chunks:
+                        normal_sign = (chunk[0].x * chunk[1].y) - (chunk[1].x * chunk[0].y)
+                        summ_normal_sign += normal_sign
+                    # check if summary normal sign is less than 0.0 -> flipped uv face detected
+                    if summ_normal_sign > 0:
+                        # uv face is ok
+                        face.select = False
+                    elif summ_normal_sign < 0:
+                        # found flipped uv face
+                        detected = True
+                        if face.hide:
+                            detected_in_hidden = True
+                        face.select = True
+                    else:
+                        # found uv-face with null area
+                        if include_null_area:
+                            detected = True
+                            if face.hide:
+                                detected_in_hidden = True
+                            face.select = True  # 0 area also select
+                # save changed data to mesh
+                bm.to_mesh(obj.data)
+                bm.free()
+                # return mode back
+                if detected:
+                    bpy.ops.object.mode_set(mode='EDIT')
+                    if detected_in_hidden:
+                        op.report(
+                            type={'INFO'},
+                            message='Flipped UV Faces: found in hidden'
+                        )
+                else:
+                    # not found any flipped uv faces - stay in OBJECT mode
+                    # print to INFO
+                    op.report(
+                        type={'INFO'},
+                        message='Flipped UV Faces: Object is clean'
+                    )
 
     # EXPERIMENTAL
 
@@ -1271,6 +1378,16 @@ class UVTools:
             vertex.select = False
 
     @staticmethod
+    def _unhide_all_bm(bm):
+        # unhide all geometry
+        for v in bm.verts:
+            v.hide_set(False)
+        for e in bm.edges:
+            e.hide_set(False)
+        for f in bm.faces:
+            f.hide_set(False)
+
+    @staticmethod
     def _bbox_uv(uv_points):
         if uv_points:
             x, y = zip(*(_p.uv for _p in uv_points))
@@ -1461,7 +1578,17 @@ class UVTools:
                 data=context.window_manager,
                 property='uv_tools_1d_prop_quad_level_pin'
             )
-
+            # Flipped UV Faces
+            box = layout.box()
+            op = box.operator(
+                operator='uvtools.flipped_uv_faces',
+                icon='PASTEFLIPUP'
+            )
+            op.include_null_area = context.window_manager.uv_tools_1d_prop_flipped_uv_faces_include_null_area
+            box.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_flipped_uv_faces_include_null_area'
+            )
 
             # ToDo: EXPERIMENTAL
 
@@ -1940,6 +2067,25 @@ class UVTools_OT_pack_to_custom_tile(Operator):
         )
         return {'FINISHED'}
 
+class UVTools_OT_flipped_uv_faces(Operator):
+    bl_idname = 'uvtools.flipped_uv_faces'
+    bl_label = 'Flipped UV Faces'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    include_null_area = BoolProperty(
+        # Include uv-faces with null square area
+        name='Include Null Area',
+        default=True
+    )
+
+    def execute(self, context):
+        UVTools.flipped_uv_faces(
+            context=context,
+            op=self,
+            include_null_area=self.include_null_area
+        )
+        return {'FINISHED'}
+
 
 # PANELS
 
@@ -2075,6 +2221,11 @@ def register(ui=True):
         default=(0.0, 0.0),
         size=2
     )
+    WindowManager.uv_tools_1d_prop_flipped_uv_faces_include_null_area = BoolProperty(
+        # Include uv-faces with null square area
+        name='Include Null Area',
+        default=True
+    )
     register_class(UVTools_OT_uvpack)
     register_class(UVTools_OT_fit_to_tile)
     register_class(UVTools_OT_texel_scale)
@@ -2087,6 +2238,7 @@ def register(ui=True):
     register_class(UVTools_OT_scan_transform)
     register_class(UVTools_OT_store_custom_tile)
     register_class(UVTools_OT_pack_to_custom_tile)
+    register_class(UVTools_OT_flipped_uv_faces)
     if ui:
         register_class(UVTools_PT_panel)
         register_class(UVTools_PT_panel_Viewport)
@@ -2097,6 +2249,7 @@ def unregister(ui=True):
         unregister_class(UVTools_PT_panel_Viewport)
         unregister_class(UVTools_PT_panel)
     # butch clean
+    unregister_class(UVTools_OT_flipped_uv_faces)
     unregister_class(UVTools_OT_pack_to_custom_tile)
     unregister_class(UVTools_OT_store_custom_tile)
     unregister_class(UVTools_OT_scan_transform)
@@ -2109,6 +2262,7 @@ def unregister(ui=True):
     unregister_class(UVTools_OT_texel_scale)
     unregister_class(UVTools_OT_fit_to_tile)
     unregister_class(UVTools_OT_uvpack)
+    del WindowManager.uv_tools_1d_prop_flipped_uv_faces_include_null_area
     del WindowManager.uv_tools_1d_prop_pack_to_c_tile_rt
     del WindowManager.uv_tools_1d_prop_pack_to_c_tile_lb
     del WindowManager.uv_tools_1d_prop_scan_transform_scale
