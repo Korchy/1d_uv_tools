@@ -35,9 +35,13 @@ Same principle as in the "Pack Tile".
 
 Rotates faces on the UV-Map to make it's longest edge horizontal for selected faces of the mesh.
 
-**Scan Transform**
+**Scan UV Transform**
 
 Splits active mesh on faces. Calls "Multi Sure UV". Compare UV maps before and after execution "Multi Sure UV". Moves faces up in 0 - Max Dist interval depends on the value of the difference Location/Rotation/Scale of the uv-faces before Shure UV and after it.
+
+**Filter UV Transform**
+
+Works on the same algorithm as "Scan UV Transform" but used comparing conditions < <= == >= >. Get active face transformations via using Multi Sure UV, next, for all other faces if they correcponds compare condition - select them.
 
 **Flipped UV Faces**
 
@@ -46,7 +50,7 @@ Finds faces with flipped UV-s. If check box "Include Null Area" is checked also 
 
 Current version
 -
-1.9.0.
+1.10.0.
 
 Blender version
 -
@@ -54,6 +58,9 @@ Blender version
 
 Version history
 -
+1.10.0
+- Added "Filter UV Transform" tool
+
 1.9.0
 - Added "Flipped UV Faces" tool
 

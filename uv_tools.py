@@ -8,18 +8,19 @@
 import bmesh
 import bpy
 from bmesh.types import BMVert
-from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, StringProperty
 from bpy.types import Operator, Panel, Scene, WindowManager
 from bpy.utils import register_class, unregister_class
 from math import atan2, ceil, cos, degrees, floor, sin, pi
 from mathutils import Vector, Matrix
 from mathutils.geometry import barycentric_transform
+import sys
 
 bl_info = {
     "name": "1D UV Tools",
     "description": "Tools for working with UV Maps",
     "author": "Nikita Akimov, Paul Kotelevets",
-    "version": (1, 9, 0),
+    "version": (1, 10, 0),
     "blender": (2, 79, 0),
     "location": "View3D > Tool panel > 1D > UV Tools",
     "doc_url": "https://github.com/Korchy/1d_uv_tools",
@@ -123,7 +124,7 @@ class UVTools:
             # get coordinates of 3 points
             for loop in face.loops:
                 if loop.vert.select and loop[uv_layer].select:
-                    # using set because coordinates will be the same for loops from different neighbour faces
+                    # using set because coordinates will be the same for loops from different neighbor faces
                     uv_vertices_selected.add(loop[uv_layer].uv[:])
         uv_points_co = list(Vector(_co) for _co in uv_vertices_selected)  # to list to keep order
         # print('uv_p_co', uv_points_co)
@@ -482,11 +483,52 @@ class UVTools:
             bpy.ops.object.mode_set(mode=mode)
 
     @classmethod
+    def _face_transforms_after_multi_sure_uv(cls, src_uv_layer, copy_uv_layer, bm_face, bm,
+                                             translation_threshold=0.02, rotation_threshold=0.02,
+                                             scale_threshold=0.02):
+        # Help function for scan_transform and filter_transform functions
+        #   get transforms (rotation/location/scale) which were make for bm_face after using Multi Sure UV
+        # rotation - compare rotation of the first longest uv-vector on copy uv_layer with the same on src uv_layer
+        src_longest_edge, src_edge_idx, src_edge_length = cls._first_longest_uv_edge(
+            face=bm_face,
+            uv_layer=src_uv_layer,
+            bm=bm
+        )
+        src_longest_vec = src_longest_edge[1].uv - src_longest_edge[0].uv
+        copy_uv_edges = cls._uv_edges(face=bm_face, uv_layer=copy_uv_layer, bm=bm)
+        copy_same_edge = copy_uv_edges[src_edge_idx]
+        copy_same_vec = copy_same_edge[1].uv - copy_same_edge[0].uv
+        # get rotation from src_vec to copy_vec in radians CCV
+        cross = src_longest_vec.x * copy_same_vec.y - src_longest_vec.y * copy_same_vec.x
+        dot = src_longest_vec.dot(copy_same_vec)
+        rotation = atan2(cross, dot)  # angle between src_ and copy_ vectors in radians
+        if abs(rotation) < rotation_threshold:
+            rotation = 0.0
+        rotation %= (2 * pi)  # set rotation angle to diapason 0 - 2pi (0 - 360 deg)
+        # scale - compare lengths on this two vectors
+        if copy_same_vec.length:
+            scale = src_edge_length / copy_same_vec.length
+            if abs(scale - 1.0) < scale_threshold:
+                scale = 1.0
+        else:
+            scale = 0.0
+        # translation - compare positions of src_ and copy_ of the uv-face centroids
+        src_uv_co = [_point.uv for _point in cls._uv_points(faces_list=[bm_face], uv_layer=src_uv_layer, bm=bm)]
+        src_centroid = cls._centroid(vertexes=src_uv_co)
+        copy_uv_co = [_point.uv for _point in cls._uv_points(faces_list=[bm_face], uv_layer=copy_uv_layer, bm=bm)]
+        copy_centroid = cls._centroid(vertexes=copy_uv_co)
+        translation = (copy_centroid - src_centroid).length
+        if abs(translation) < translation_threshold:
+            translation = 0.0
+        return {'rotation': rotation, 'translation': translation, 'scale': scale}
+
+    @classmethod
     def scan_transform(cls, context, max_value=99.0,
                        select_only=False, process_only_selection=False,
-                       check_translation=False, check_rotation=False, check_scale=False,
-                       check_threshold = 0.02):
-        # Check what faces was changed via Multi Shure UV and moves them up proportionally by max_value
+                       check_translation=False, translation_threshold=0.02,
+                       check_rotation=False, rotation_threshold=0.02,
+                       check_scale=False, scale_threshold=0.02):
+        # Check what faces was changed via Multi Sure UV and moves them up proportionally by max_value
         #   select_only - only select faces, don't move
         #   only_selection - process only selected faces
         # current object
@@ -524,38 +566,19 @@ class UVTools:
         changes = []    # [[face, rotation, translation, scale], ...]
         for face in faces:
             # check each face for transforms
-            # rotation - compare rotation of the first longest uv-vector on copy uv_layer with the same on src uv_layer
-            src_longest_edge, src_edge_idx, src_edge_length = cls._first_longest_uv_edge(
-                face=face,
-                uv_layer=src_uv_layer,
-                bm=bm
+            face_transforms = cls._face_transforms_after_multi_sure_uv(
+                src_uv_layer=src_uv_layer,
+                copy_uv_layer=copy_uv_layer,
+                bm_face=face,
+                bm=bm,
+                translation_threshold=translation_threshold,
+                rotation_threshold=rotation_threshold,
+                scale_threshold=scale_threshold
             )
-            src_longest_vec = src_longest_edge[1].uv - src_longest_edge[0].uv
-            copy_uv_edges = cls._uv_edges(face=face, uv_layer=copy_uv_layer, bm=bm)
-            copy_same_edge = copy_uv_edges[src_edge_idx]
-            copy_same_vec = copy_same_edge[1].uv - copy_same_edge[0].uv
-            # get rotation from src_vec to copy_vec in radians CCV
-            cross = src_longest_vec.x * copy_same_vec.y - src_longest_vec.y * copy_same_vec.x
-            dot = src_longest_vec.dot(copy_same_vec)
-            rotation = atan2(cross, dot)    # angle between src_ and copy_ vectors in radians
-            if abs(rotation) < check_threshold:
-                rotation = 0.0
-            rotation %= (2 * pi)    # set rotation angle to diapason 0 - 2pi (0 - 360 deg)
-            # scale - compare lengths on this two vectors
-            scale = src_edge_length / copy_same_vec.length
-            if abs(scale - 1.0) < check_threshold:
-                scale = 0.0
-            # translation - compare positions of src_ and copy_ of the uv-face centroids
-            src_uv_co = [_point.uv for _point in cls._uv_points(faces_list=[face], uv_layer=src_uv_layer, bm=bm)]
-            src_centroid = cls._centroid(vertexes=src_uv_co)
-            copy_uv_co = [_point.uv for _point in cls._uv_points(faces_list=[face], uv_layer=copy_uv_layer, bm=bm)]
-            copy_centroid = cls._centroid(vertexes=copy_uv_co)
-            translation = (copy_centroid - src_centroid).length
-            if abs(translation) < check_threshold:
-                translation = 0.0
+            face_transforms['scale'] = face_transforms['scale'] if face_transforms['scale'] != 1.0 else 0.0
             # append to changes
-            if rotation != 0.0 or translation != 0.0 or scale != 0.0:
-                changes.append([face, rotation, translation, scale])
+            if face_transforms['rotation'] != 0.0 or face_transforms['translation'] != 0.0 or face_transforms['scale'] != 0.0:
+                changes.append([face, face_transforms['rotation'], face_transforms['translation'], face_transforms['scale']])
         # apply changes to the faces
         if changes:
             if select_only:
@@ -592,6 +615,119 @@ class UVTools:
                             vertex.co.z += max_value * (scale - min_scale) / (max_scale - min_scale)
         # save changed data to mesh
         bm.to_mesh(obj.data)
+        bm.free()
+        # remove temporary copy of the uv-map
+        obj.data.uv_textures.remove(obj.data.uv_textures[copy_uv_layer_name])
+        # return mode back
+        if mode is not None:
+            bpy.ops.object.mode_set(mode=mode)
+
+    @classmethod
+    def filter_transform(cls, op, context, compare_mode='EQ', op_mode='AND',
+                         check_translation=False, translation_threshold=0.02,
+                         check_rotation=False, rotation_threshold=0.02,
+                         check_scale=False, scale_threshold=0.02,
+                         scale_multiplier=682.6):
+        # Get active face.
+        #   Check how it was changed via Multi Sure UV (get numeric values)
+        #   Check other faces and if they were changed via Multi Sure UV too and values corresponds filter direction
+        #   select them
+        # current object
+        obj = context.active_object
+        # current mode
+        mode = obj.mode if obj.mode != 'OBJECT' else None
+        if mode is not None:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        # src uv name
+        src_uv_layer_name = cls._active_uv_layer(obj=obj).name
+        # create temp copy of active uv
+        bpy.ops.mesh.uv_texture_add()
+        # copy uv
+        copy_uv_layer_name = cls._active_uv_layer(obj=obj).name
+        # execute Multi Sure UV on copy uv_layer
+        bpy.ops.uvtools.multy_sureuv()
+        # use bmesh for proper selection
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        src_uv_layer = bm.loops.layers.uv[src_uv_layer_name]
+        copy_uv_layer = bm.loops.layers.uv[copy_uv_layer_name]
+        # count transforms of the active face which were done via Multi Sure UV
+        active_face = bm.faces.active
+        active_face_transforms = cls._face_transforms_after_multi_sure_uv(
+            src_uv_layer=src_uv_layer,
+            copy_uv_layer=copy_uv_layer,
+            bm_face=active_face,
+            bm=bm,
+            translation_threshold=translation_threshold,
+            rotation_threshold=rotation_threshold,
+            scale_threshold=scale_threshold
+        )
+        # show active face transforms in INFO
+        op.report(
+            type={'INFO'},
+            message='Loc: ' + str(round(active_face_transforms['translation'], 4)) + ' | ' \
+                    + 'Rot: ' + str(round(degrees(active_face_transforms['rotation']), 2)) + ' | ' \
+                    + 'Scale: ' + str(round(active_face_transforms['scale'] * scale_multiplier, 4)) \
+                    + ' (' + str(round(active_face_transforms['scale'], 4)) + ')'
+        )
+        if check_rotation or check_translation or check_scale:
+            # deselect all
+            cls._deselect_all_bm(bm=bm)
+            # proces faces
+            for face in bm.faces:
+                # check each face for transforms
+                face_transforms = cls._face_transforms_after_multi_sure_uv(
+                    src_uv_layer=src_uv_layer,
+                    copy_uv_layer=copy_uv_layer,
+                    bm_face=face,
+                    bm=bm,
+                    translation_threshold=translation_threshold,
+                    rotation_threshold=rotation_threshold,
+                    scale_threshold=scale_threshold
+                )
+                # compare face transforms with active_face transforms
+                if op_mode == 'OR':
+                    if check_scale:
+                        if cls._value_threshold(active_face_transforms['scale'] * scale_multiplier, scale_threshold, 'MIN', compare_mode) \
+                                <= face_transforms['scale'] * scale_multiplier <= \
+                                cls._value_threshold(active_face_transforms['scale'] * scale_multiplier, scale_threshold, 'MAX', compare_mode):
+                            face.select = True
+                    if check_rotation:
+                        if cls._value_threshold(active_face_transforms['rotation'], rotation_threshold, 'MIN', compare_mode) \
+                                <= face_transforms['rotation'] <= \
+                                cls._value_threshold(active_face_transforms['rotation'], rotation_threshold, 'MAX', compare_mode):
+                            face.select = True
+                    if check_translation:
+                        if cls._value_threshold(active_face_transforms['translation'], translation_threshold, 'MIN', compare_mode) \
+                                <= face_transforms['translation'] <= \
+                                cls._value_threshold(active_face_transforms['translation'], translation_threshold, 'MAX', compare_mode):
+                            face.select = True
+                elif op_mode == 'AND':
+                    # select face only if it has all transforms (scale/rotation/translation) and meets conditions
+                    conditions = []
+                    if check_scale:
+                        conditions.append(
+                            cls._value_threshold(active_face_transforms['scale'] * scale_multiplier, scale_threshold, 'MIN', compare_mode) \
+                            <= face_transforms['scale'] * scale_multiplier <= \
+                            cls._value_threshold(active_face_transforms['scale'] * scale_multiplier, scale_threshold, 'MAX', compare_mode)
+                        )
+                    if check_rotation:
+                        conditions.append(
+                            cls._value_threshold(active_face_transforms['rotation'], rotation_threshold, 'MIN', compare_mode) \
+                            <= face_transforms['rotation'] <= \
+                            cls._value_threshold(active_face_transforms['rotation'], rotation_threshold, 'MAX', compare_mode)
+                        )
+                    if check_translation:
+                        conditions.append(
+                            cls._value_threshold(active_face_transforms['translation'], translation_threshold, 'MIN', compare_mode) \
+                            <= face_transforms['translation'] <= \
+                            cls._value_threshold(active_face_transforms['translation'], translation_threshold, 'MAX', compare_mode)
+                        )
+                    if conditions and all(conditions):
+                        face.select = True
+            bm.select_flush_mode()
+            # save changed data to mesh
+            bm.to_mesh(obj.data)
         bm.free()
         # remove temporary copy of the uv-map
         obj.data.uv_textures.remove(obj.data.uv_textures[copy_uv_layer_name])
@@ -1407,6 +1543,37 @@ class UVTools:
             }
 
     @staticmethod
+    def _value_threshold(value, threshold, value_type='NONE', compare_mode='EQ', threshold_type='ABS'):
+        # support function to get MIN/MAX value with threshold by compare operation mode
+        #   value_type = MIN | MAX | NONE
+        #   compare_mode -  EQ (==) - equal with threshold
+        #                   LE (<=) - less than or equal with threshold
+        #                   GE (>=) - grater than with threshold
+        #   threshold_type = 'ABS' - threshold is absolute
+        #                    'PERCENTS' - threshold is percents of the value
+        if compare_mode == 'LT':
+            min_value = 0.0
+            max_value = value * (1 - threshold / 100) if threshold_type == 'PERCENTS' else (value - threshold)
+        elif compare_mode == 'LE':
+            min_value = 0.0
+            max_value = value * (1 + threshold / 100) if threshold_type == 'PERCENTS' else (value + threshold)
+        elif compare_mode == 'GE':
+            min_value = value * (1 - threshold / 100) if threshold_type == 'PERCENTS' else (value - threshold)
+            max_value = sys.maxsize
+        elif compare_mode == 'GT':
+            min_value = value * (1 + threshold / 100) if threshold_type == 'PERCENTS' else (value + threshold)
+            max_value = sys.maxsize
+        else:  # EQ
+            min_value = value * (1 - threshold / 100) if threshold_type == 'PERCENTS' else (value - threshold)
+            max_value = value * (1 + threshold / 100) if threshold_type == 'PERCENTS' else (value + threshold)
+        if value_type == 'MIN':
+            return min_value
+        elif value_type == 'MAX':
+            return max_value
+        else:   # 'NONE'
+            return value
+
+    @staticmethod
     def ui(layout, context, area):
         # ui panels
         if area == 'VIEWPORT':
@@ -1435,7 +1602,9 @@ class UVTools:
             op.check_translation = context.window_manager.uv_tools_1d_prop_scan_transform_translation
             op.check_rotation = context.window_manager.uv_tools_1d_prop_scan_transform_rotation
             op.check_scale = context.window_manager.uv_tools_1d_prop_scan_transform_scale
-            op.threshold = context.window_manager.uv_tools_1d_prop_scan_transform_threshold
+            op.rotation_threshold = context.window_manager.uv_tools_1d_prop_scan_transform_rotation_threshold
+            op.translation_threshold = context.window_manager.uv_tools_1d_prop_scan_transform_translation_threshold
+            op.scale_threshold = context.window_manager.uv_tools_1d_prop_scan_transform_scale_threshold
             box.prop(
                 data=context.window_manager,
                 property='uv_tools_1d_prop_scan_transform_max_value'
@@ -1448,21 +1617,63 @@ class UVTools:
                 data=context.window_manager,
                 property='uv_tools_1d_prop_scan_transform_only_selection'
             )
-            box.prop(
-                data=context.window_manager,
-                property='uv_tools_1d_prop_scan_transform_threshold'
-            )
-            box.prop(
+            col = box.column(align=True)
+            row = col.row(align=True)
+            row.prop(
                 data=context.window_manager,
                 property='uv_tools_1d_prop_scan_transform_translation'
             )
-            box.prop(
+            row.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_scan_transform_translation_threshold'
+            )
+            row = col.row(align=True)
+            row.prop(
                 data=context.window_manager,
                 property='uv_tools_1d_prop_scan_transform_rotation'
             )
-            box.prop(
+            row.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_scan_transform_rotation_threshold'
+            )
+            row = col.row(align=True)
+            row.prop(
                 data=context.window_manager,
                 property='uv_tools_1d_prop_scan_transform_scale'
+            )
+            row.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_scan_transform_scale_threshold'
+            )
+            op = box.operator(
+                operator='uvtools.filter_transform',
+                icon='GROUP_VERTEX'
+            )
+            op.compare_mode = context.window_manager.uv_tools_1d_prop_filter_transform_compare_mode
+            op.op_mode = context.window_manager.uv_tools_1d_prop_filter_transform_op_mode
+            op.check_translation = context.window_manager.uv_tools_1d_prop_scan_transform_translation
+            op.check_rotation = context.window_manager.uv_tools_1d_prop_scan_transform_rotation
+            op.check_scale = context.window_manager.uv_tools_1d_prop_scan_transform_scale
+            op.scale_multiplier = context.window_manager.uv_tools_1d_prop_filter_transform_scale_multiplier
+            op.rotation_threshold = context.window_manager.uv_tools_1d_prop_scan_transform_rotation_threshold
+            op.translation_threshold = context.window_manager.uv_tools_1d_prop_scan_transform_translation_threshold
+            op.scale_threshold = context.window_manager.uv_tools_1d_prop_scan_transform_scale_threshold
+            row = box.row(align=True)
+            row.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_filter_transform_op_mode',
+                expand=True
+            )
+            row = box.row(align=True)
+            row.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_filter_transform_compare_mode',
+                expand=True
+            )
+            row = box.row(align=True)
+            row.prop(
+                data=context.window_manager,
+                property='uv_tools_1d_prop_filter_transform_scale_multiplier'
             )
             # Multy Sure UV
             box = layout.box().column()
@@ -2008,26 +2219,38 @@ class UVTools_OT_scan_transform(Operator):
         name='Only Selection',
         default=False
     )
-    threshold = FloatProperty(
-        # Threshold
-        name='Threshold',
-        default=0.06,
-        min=0.0
-    )
     check_translation = BoolProperty(
         # Check translation
         name='Location',
         default=False
+    )
+    translation_threshold = FloatProperty(
+        # Translation threshold
+        name='Translation threshold',
+        default=0.06,
+        min=0.0
     )
     check_rotation = BoolProperty(
         # Check rotation
         name='Rotation',
         default=False
     )
+    rotation_threshold = FloatProperty(
+        # Rotation threshold
+        name='Rotation threshold',
+        default=0.06,
+        min=0.0
+    )
     check_scale = BoolProperty(
         # Check scale
         name='Scale',
         default=False
+    )
+    scale_threshold = FloatProperty(
+        # Scale threshold
+        name='Scale threshold',
+        default=0.06,
+        min=0.0
     )
 
     def execute(self, context):
@@ -2037,11 +2260,96 @@ class UVTools_OT_scan_transform(Operator):
             select_only=self.select_only,
             process_only_selection=self.only_selection,
             check_translation=self.check_translation,
+            translation_threshold=self.translation_threshold,
             check_rotation=self.check_rotation,
+            rotation_threshold=self.rotation_threshold,
             check_scale=self.check_scale,
-            check_threshold=self.threshold
+            scale_threshold=self.scale_threshold
         )
         return {'FINISHED'}
+
+class UVTools_OT_filter_transform(Operator):
+    bl_idname = 'uvtools.filter_transform'
+    bl_label = 'Filter UV Transform'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    compare_mode = EnumProperty(
+        name='Compare Mode',
+        items=[
+            ('LT', '<', '<'),
+            ('LE', '<=', '<='),
+            ('EQ', '==', '=='),
+            ('GE', '>=', '>='),
+            ('GT', '>', '>')
+        ],
+        default='EQ'
+    )
+    op_mode = EnumProperty(
+        name='Op Mode',
+        items=[
+            ('OR', 'OR', 'OR'),
+            ('AND', 'AND', 'AND')
+        ],
+        default='AND'
+    )
+    check_translation = BoolProperty(
+        # Check translation
+        name='Location',
+        default=False
+    )
+    translation_threshold = FloatProperty(
+        # Translation threshold
+        name='Translation threshold',
+        default=0.06,
+        min=0.0
+    )
+    check_rotation = BoolProperty(
+        # Check rotation
+        name='Rotation',
+        default=False
+    )
+    rotation_threshold = FloatProperty(
+        # Rotation threshold
+        name='Rotation threshold',
+        default=0.06,
+        min=0.0
+    )
+    check_scale = BoolProperty(
+        # Check scale
+        name='Scale',
+        default=False
+    )
+    scale_threshold = FloatProperty(
+        # Scale threshold
+        name='Scale threshold',
+        default=0.06,
+        min=0.0
+    )
+    scale_multiplier =  FloatProperty(
+        # Scale Multiplier
+        name='Scale Multiplier',
+        default=682.6,
+        min=0.0
+    )
+    def execute(self, context):
+        UVTools.filter_transform(
+            op=self,
+            context=context,
+            compare_mode=self.compare_mode,
+            op_mode=self.op_mode,
+            check_translation=self.check_translation,
+            translation_threshold=self.translation_threshold,
+            check_rotation=self.check_rotation,
+            rotation_threshold=self.rotation_threshold,
+            check_scale=self.check_scale,
+            scale_threshold=self.scale_threshold,
+            scale_multiplier=self.scale_multiplier
+        )
+        return {'FINISHED'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object and context.active_object.mode == 'EDIT'
 
 class UVTools_OT_store_custom_tile(Operator):
     bl_idname = 'uvtools.store_custom_tile'
@@ -2190,15 +2498,27 @@ def register(ui=True):
         name='Check Only Selection',
         default=False
     )
-    WindowManager.uv_tools_1d_prop_scan_transform_threshold = FloatProperty(
-        # Threshold
-        name='Threshold',
+    WindowManager.uv_tools_1d_prop_scan_transform_rotation_threshold = FloatProperty(
+        # Rotation threshold
+        name='Rotation threshold',
+        default=0.06,
+        min=0.0
+    )
+    WindowManager.uv_tools_1d_prop_scan_transform_translation_threshold = FloatProperty(
+        # Translation threshold
+        name='Translation threshold',
+        default=0.06,
+        min=0.0
+    )
+    WindowManager.uv_tools_1d_prop_scan_transform_scale_threshold = FloatProperty(
+        # Scale threshold
+        name='Scale threshold',
         default=0.06,
         min=0.0
     )
     WindowManager.uv_tools_1d_prop_scan_transform_translation = BoolProperty(
         # Check translation
-        name='Location',
+        name='Translation',
         default=False
     )
     WindowManager.uv_tools_1d_prop_scan_transform_rotation = BoolProperty(
@@ -2210,6 +2530,31 @@ def register(ui=True):
         # Check scale
         name='Scale',
         default=False
+    )
+    WindowManager.uv_tools_1d_prop_filter_transform_compare_mode = EnumProperty(
+        name='Compare Mode',
+        items=[
+            ('LT', '<', '<'),
+            ('LE', '<=', '<='),
+            ('EQ', '==', '=='),
+            ('GE', '>=', '>='),
+            ('GT', '>', '>')
+        ],
+        default='EQ'
+    )
+    WindowManager.uv_tools_1d_prop_filter_transform_op_mode = EnumProperty(
+        name='Op Mode',
+        items=[
+            ('OR', 'OR', 'OR'),
+            ('AND', 'AND', 'AND')
+        ],
+        default='AND'
+    )
+    WindowManager.uv_tools_1d_prop_filter_transform_scale_multiplier =  FloatProperty(
+        # Scale Multiplier
+        name='Scale Multiplier',
+        default=682.6,
+        min=0.0
     )
     WindowManager.uv_tools_1d_prop_pack_to_c_tile_lb = FloatVectorProperty(
         name='Left-bottom angle of packed area',
@@ -2236,6 +2581,7 @@ def register(ui=True):
     register_class(UVTools_SureUVWOperator)
     register_class(UVTools_OT_quad_level)
     register_class(UVTools_OT_scan_transform)
+    register_class(UVTools_OT_filter_transform)
     register_class(UVTools_OT_store_custom_tile)
     register_class(UVTools_OT_pack_to_custom_tile)
     register_class(UVTools_OT_flipped_uv_faces)
@@ -2252,6 +2598,7 @@ def unregister(ui=True):
     unregister_class(UVTools_OT_flipped_uv_faces)
     unregister_class(UVTools_OT_pack_to_custom_tile)
     unregister_class(UVTools_OT_store_custom_tile)
+    unregister_class(UVTools_OT_filter_transform)
     unregister_class(UVTools_OT_scan_transform)
     unregister_class(UVTools_OT_quad_level)
     unregister_class(UVTools_SureUVWOperator)
@@ -2265,10 +2612,15 @@ def unregister(ui=True):
     del WindowManager.uv_tools_1d_prop_flipped_uv_faces_include_null_area
     del WindowManager.uv_tools_1d_prop_pack_to_c_tile_rt
     del WindowManager.uv_tools_1d_prop_pack_to_c_tile_lb
+    del WindowManager.uv_tools_1d_prop_filter_transform_scale_multiplier
+    del WindowManager.uv_tools_1d_prop_filter_transform_op_mode
+    del WindowManager.uv_tools_1d_prop_filter_transform_compare_mode
     del WindowManager.uv_tools_1d_prop_scan_transform_scale
     del WindowManager.uv_tools_1d_prop_scan_transform_rotation
     del WindowManager.uv_tools_1d_prop_scan_transform_translation
-    del WindowManager.uv_tools_1d_prop_scan_transform_threshold
+    del WindowManager.uv_tools_1d_prop_scan_transform_scale_threshold
+    del WindowManager.uv_tools_1d_prop_scan_transform_translation_threshold
+    del WindowManager.uv_tools_1d_prop_scan_transform_rotation_threshold
     del WindowManager.uv_tools_1d_prop_scan_transform_select_only
     del WindowManager.uv_tools_1d_prop_scan_transform_only_selection
     del WindowManager.uv_tools_1d_prop_scan_transform_max_value
