@@ -634,12 +634,19 @@ class UVTools:
         #   select them
         # current object
         obj = context.active_object
+        # src uv name
+        active_uv_layer = cls._active_uv_layer(obj=obj)
+        if not active_uv_layer:
+            op.report(
+                type={'INFO'},
+                message='No active UV'
+            )
+            return
+        src_uv_layer_name = active_uv_layer.name
         # current mode
         mode = obj.mode if obj.mode != 'OBJECT' else None
         if mode is not None:
             bpy.ops.object.mode_set(mode='OBJECT')
-        # src uv name
-        src_uv_layer_name = cls._active_uv_layer(obj=obj).name
         # create temp copy of active uv
         bpy.ops.mesh.uv_texture_add()
         # copy uv
@@ -653,24 +660,30 @@ class UVTools:
         copy_uv_layer = bm.loops.layers.uv[copy_uv_layer_name]
         # count transforms of the active face which were done via Multi Sure UV
         active_face = bm.faces.active
-        active_face_transforms = cls._face_transforms_after_multi_sure_uv(
-            src_uv_layer=src_uv_layer,
-            copy_uv_layer=copy_uv_layer,
-            bm_face=active_face,
-            bm=bm,
-            translation_threshold=translation_threshold,
-            rotation_threshold=rotation_threshold,
-            scale_threshold=scale_threshold
-        )
-        # show active face transforms in INFO
-        op.report(
-            type={'INFO'},
-            message='Loc: ' + str(round(active_face_transforms['translation'], 4)) + ' | ' \
-                    + 'Rot: ' + str(round(degrees(active_face_transforms['rotation']), 2)) + ' | ' \
-                    + 'Scale: ' + str(round(active_face_transforms['scale'] * scale_multiplier, 4)) \
-                    + ' (' + str(round(active_face_transforms['scale'], 4)) + ')'
-        )
-        if check_rotation or check_translation or check_scale:
+        if active_face:
+            active_face_transforms = cls._face_transforms_after_multi_sure_uv(
+                src_uv_layer=src_uv_layer,
+                copy_uv_layer=copy_uv_layer,
+                bm_face=active_face,
+                bm=bm,
+                translation_threshold=translation_threshold,
+                rotation_threshold=rotation_threshold,
+                scale_threshold=scale_threshold
+            )
+            # show active face transforms in INFO
+            op.report(
+                type={'INFO'},
+                message='Loc: ' + str(round(active_face_transforms['translation'], 4)) + ' | ' \
+                        + 'Rot: ' + str(round(degrees(active_face_transforms['rotation']), 2)) + ' | ' \
+                        + 'Scale: ' + str(round(active_face_transforms['scale'] * scale_multiplier, 4)) \
+                        + ' (' + str(round(active_face_transforms['scale'], 4)) + ')'
+            )
+        else:
+            op.report(
+                type={'INFO'},
+                message='No active face'
+            )
+        if active_face and (check_rotation or check_translation or check_scale):
             # deselect all
             cls._deselect_all_bm(bm=bm)
             # proces faces
@@ -1380,6 +1393,7 @@ class UVTools:
         # get list of UV points for mesh faces from faces_list
         # [uv_point, uv_point, ...]
         if bm:
+            print(faces_list)
             return [_loop[uv_layer] for _face in faces_list for _loop in _face.loops]
         else:
             return [uv_layer.data[loop_index] for _face in faces_list for loop_index in _face.loop_indices]
@@ -1387,6 +1401,7 @@ class UVTools:
     @classmethod
     def _uv_edges(cls, face, uv_layer, bm=None):
         # get list of UV edges from uv_points
+        print(face)
         uv_points = cls._uv_points(faces_list=[face], uv_layer=uv_layer, bm=bm)
         uv_points.append(uv_points[0])  # last point -> first point edge
         # [[uv_point, uv_point], ...]
@@ -1488,6 +1503,7 @@ class UVTools:
     @classmethod
     def _first_longest_uv_edge(cls, face, uv_layer, bm=None, offset=0):
         # get first longest uv-edge on the uv-face (uv loop) of the face
+        print(face)
         # [[uv_point, uv_point], ...]
         uv_edges = cls._uv_edges(face=face, uv_layer=uv_layer, bm=bm)
         # sort by edges length
